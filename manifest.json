@@ -1,0 +1,13 @@
+{
+    "display_name": "Franken-Swipe",
+    "loading_order": 50,
+    "requires": [],
+    "optional": [],
+    "js": "index.js",
+    "css": "style.css",
+    "author": "serioos",
+    "version": "1.0.0",
+    "homePage": "https://github.com/serioos/Franken-Swipe",
+    "auto_update": true,
+    "minimum_client_version": "1.12.0"
+}
