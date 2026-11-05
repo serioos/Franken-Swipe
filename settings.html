@@ -1,0 +1,102 @@
+<div id="franken_swipe_settings" class="franken-swipe-settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b><i class="fa-solid fa-dna"></i> Franken-Swipe</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <div class="fs-settings-description">
+                Compare swipes side-by-side and stitch paragraphs, sentences, dialogue, or freehand snippets into one combined response.
+            </div>
+
+            <div class="fs-settings-row">
+                <label for="fs_setting_button_placement">Trigger Button Placement</label>
+                <select id="fs_setting_button_placement" class="text_pole">
+                    <option value="both">Swipe Controls &amp; Message Action Menu</option>
+                    <option value="swipe_controls">Near Swipe Controls Only</option>
+                    <option value="action_menu">Message Action Menu (...) Only</option>
+                    <option value="none">Hidden (Slash Command / Hotkey Only)</option>
+                </select>
+            </div>
+
+            <div class="fs-settings-row">
+                <label for="fs_setting_default_granularity">Default Split Granularity</label>
+                <select id="fs_setting_default_granularity" class="text_pole">
+                    <option value="paragraphs">Paragraphs</option>
+                    <option value="lines">Lines (Single Line Breaks)</option>
+                    <option value="sentences">Sentences</option>
+                    <option value="dialogue">Dialogue vs. Narration</option>
+                </select>
+            </div>
+
+            <div class="fs-settings-row">
+                <label for="fs_setting_default_view">Default Comparison View</label>
+                <select id="fs_setting_default_view" class="text_pole">
+                    <option value="rows">Aligned Row View</option>
+                    <option value="columns">Column View</option>
+                    <option value="diff">Visual Diff Mode</option>
+                </select>
+            </div>
+
+            <div class="fs-settings-row">
+                <label for="fs_setting_default_save_mode">Default Save Action</label>
+                <select id="fs_setting_default_save_mode" class="text_pole">
+                    <option value="new_swipe">Save as New Swipe</option>
+                    <option value="overwrite">Overwrite Active Swipe</option>
+                    <option value="save_cleanup">Save &amp; Clean Up Unused Swipes</option>
+                </select>
+            </div>
+
+            <div class="fs-settings-row">
+                <label for="fs_setting_default_reasoning">Default Reasoning / Thought Handling</label>
+                <select id="fs_setting_default_reasoning" class="text_pole">
+                    <option value="primary_donor">Keep Primary Donor Swipe's Reasoning</option>
+                    <option value="active_swipe">Keep Active Swipe's Reasoning</option>
+                    <option value="combine">Combine Reasoning from Used Donors</option>
+                    <option value="none">Leave Reasoning Blank</option>
+                </select>
+            </div>
+
+            <div class="fs-settings-row fs-settings-checkboxes">
+                <label class="checkbox_label" for="fs_setting_dim_duplicates">
+                    <input type="checkbox" id="fs_setting_dim_duplicates" />
+                    <span>Dim identical duplicate blocks by default</span>
+                </label>
+                <label class="checkbox_label" for="fs_setting_collapse_duplicates">
+                    <input type="checkbox" id="fs_setting_collapse_duplicates" />
+                    <span>Collapse identical duplicate blocks by default</span>
+                </label>
+                <label class="checkbox_label" for="fs_setting_auto_base_active">
+                    <input type="checkbox" id="fs_setting_auto_base_active" />
+                    <span>Pre-load active swipe as draft base when opening</span>
+                </label>
+            </div>
+
+            <hr class="sysHR" />
+
+            <div class="fs-settings-row">
+                <label class="checkbox_label" for="fs_setting_hotkey_enabled">
+                    <input type="checkbox" id="fs_setting_hotkey_enabled" />
+                    <span>Enable Keyboard Shortcut (opens latest multi-swipe message)</span>
+                </label>
+            </div>
+
+            <div class="fs-settings-row fs-hotkey-config-row">
+                <label for="fs_setting_hotkey">Shortcut Key Combo</label>
+                <div class="fs-hotkey-input-group">
+                    <input type="text" id="fs_setting_hotkey" class="text_pole" readonly placeholder="Alt+KeyF" />
+                    <button type="button" id="fs_record_hotkey_btn" class="menu_button">
+                        <i class="fa-solid fa-keyboard"></i> Record
+                    </button>
+                </div>
+            </div>
+
+            <div class="fs-settings-footer">
+                <button type="button" id="fs_open_latest_btn" class="menu_button">
+                    <i class="fa-solid fa-dna"></i> Open Franken-Swipe on Latest Message
+                </button>
+                <small class="fs-settings-hint">Slash Command: <code>/frankenswipe [mesId]</code> or <code>/fswipe</code></small>
+            </div>
+        </div>
+    </div>
+</div>

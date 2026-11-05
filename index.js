@@ -1,995 +1,2445 @@
-/*
- * Franken-Swipe — SillyTavern third-party extension
- * Compare every swipe of a message and stitch the best parts into one new response.
- * Uses only the public SillyTavern.getContext() API (no relative imports), so it
- * works regardless of the folder name / install location.
+/**
+ * Franken-Swipe Extension for SillyTavern
+ * Compare multiple swipes side-by-side and stitch paragraphs, lines, sentences,
+ * dialogue, or custom text selections into a single combined response.
+ *
+ * Repository: https://github.com/serioos/Franken-Swipe
  */
-(() => {
-    'use strict';
 
-    const MODULE = 'franken_swipe';
-    const NAME = 'Franken-Swipe';
-    const DEFAULTS = {
-        triggerLocation: 'both',      // menu | swipes | both | none
-        granularity: 'paragraphs',    // paragraphs | lines | sentences | dialogue | freehand
-        layout: 'rows',               // rows | columns | diff
-        dupMode: 'dim',               // dim | collapse | off
-        saveMode: 'new',              // new | overwrite | clean
-        reasoningMode: 'primary',     // primary | active | combine | blank
-        confirmOverwrite: true,
-        hotkeyEnabled: true,
-        hotkey: 'Alt+Shift+S',
+const MODULE_NAME = 'franken_swipe';
+const EXTENSION_FOLDER_URL = new URL('.', import.meta.url).pathname.replace(/\/$/, '');
+
+const DEFAULT_SETTINGS = Object.freeze({
+    buttonPlacement: 'both',           // 'both' | 'swipe_controls' | 'action_menu' | 'none'
+    defaultGranularity: 'paragraphs',  // 'paragraphs' | 'lines' | 'sentences' | 'dialogue'
+    defaultView: 'rows',               // 'rows' | 'columns' | 'diff'
+    defaultSaveMode: 'new_swipe',      // 'new_swipe' | 'overwrite' | 'save_cleanup'
+    defaultReasoning: 'primary_donor', // 'primary_donor' | 'active_swipe' | 'combine' | 'none'
+    dimDuplicates: true,
+    collapseDuplicates: false,
+    autoBaseActive: false,
+    hotkeyEnabled: true,
+    hotkeyCombo: 'Alt+KeyF',
+});
+
+const FALLBACK_SETTINGS_HTML = `
+<div id="franken_swipe_settings" class="franken-swipe-settings">
+    <div class="inline-drawer">
+        <div class="inline-drawer-toggle inline-drawer-header">
+            <b><i class="fa-solid fa-dna"></i> Franken-Swipe</b>
+            <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
+        </div>
+        <div class="inline-drawer-content">
+            <div class="fs-settings-description">Compare swipes side-by-side and stitch blocks from different swipes into one combined response.</div>
+            <div class="fs-settings-row">
+                <label for="fs_setting_button_placement">Trigger Button Placement</label>
+                <select id="fs_setting_button_placement" class="text_pole">
+                    <option value="both">Swipe Controls &amp; Message Action Menu</option>
+                    <option value="swipe_controls">Near Swipe Controls Only</option>
+                    <option value="action_menu">Message Action Menu (...) Only</option>
+                    <option value="none">Hidden (Slash Command / Hotkey Only)</option>
+                </select>
+            </div>
+            <div class="fs-settings-row">
+                <label for="fs_setting_default_granularity">Default Split Granularity</label>
+                <select id="fs_setting_default_granularity" class="text_pole">
+                    <option value="paragraphs">Paragraphs</option>
+                    <option value="lines">Lines (Single Line Breaks)</option>
+                    <option value="sentences">Sentences</option>
+                    <option value="dialogue">Dialogue vs. Narration</option>
+                </select>
+            </div>
+            <div class="fs-settings-row">
+                <label for="fs_setting_default_view">Default Comparison View</label>
+                <select id="fs_setting_default_view" class="text_pole">
+                    <option value="rows">Aligned Row View</option>
+                    <option value="columns">Column View</option>
+                    <option value="diff">Visual Diff Mode</option>
+                </select>
+            </div>
+            <div class="fs-settings-row">
+                <label for="fs_setting_default_save_mode">Default Save Action</label>
+                <select id="fs_setting_default_save_mode" class="text_pole">
+                    <option value="new_swipe">Save as New Swipe</option>
+                    <option value="overwrite">Overwrite Active Swipe</option>
+                    <option value="save_cleanup">Save &amp; Clean Up Unused Swipes</option>
+                </select>
+            </div>
+            <div class="fs-settings-row">
+                <label for="fs_setting_default_reasoning">Default Reasoning / Thought Handling</label>
+                <select id="fs_setting_default_reasoning" class="text_pole">
+                    <option value="primary_donor">Keep Primary Donor Swipe's Reasoning</option>
+                    <option value="active_swipe">Keep Active Swipe's Reasoning</option>
+                    <option value="combine">Combine Reasoning from Used Donors</option>
+                    <option value="none">Leave Reasoning Blank</option>
+                </select>
+            </div>
+            <div class="fs-settings-row fs-settings-checkboxes">
+                <label class="checkbox_label" for="fs_setting_dim_duplicates">
+                    <input type="checkbox" id="fs_setting_dim_duplicates" />
+                    <span>Dim identical duplicate blocks by default</span>
+                </label>
+                <label class="checkbox_label" for="fs_setting_collapse_duplicates">
+                    <input type="checkbox" id="fs_setting_collapse_duplicates" />
+                    <span>Collapse identical duplicate blocks by default</span>
+                </label>
+                <label class="checkbox_label" for="fs_setting_auto_base_active">
+                    <input type="checkbox" id="fs_setting_auto_base_active" />
+                    <span>Pre-load active swipe as draft base when opening</span>
+                </label>
+            </div>
+            <hr class="sysHR" />
+            <div class="fs-settings-row">
+                <label class="checkbox_label" for="fs_setting_hotkey_enabled">
+                    <input type="checkbox" id="fs_setting_hotkey_enabled" />
+                    <span>Enable Keyboard Shortcut (opens latest multi-swipe message)</span>
+                </label>
+            </div>
+            <div class="fs-settings-row fs-hotkey-config-row">
+                <label for="fs_setting_hotkey">Shortcut Key Combo</label>
+                <div class="fs-hotkey-input-group">
+                    <input type="text" id="fs_setting_hotkey" class="text_pole" readonly placeholder="Alt+KeyF" />
+                    <button type="button" id="fs_record_hotkey_btn" class="menu_button"><i class="fa-solid fa-keyboard"></i> Record</button>
+                </div>
+            </div>
+            <div class="fs-settings-footer">
+                <button type="button" id="fs_open_latest_btn" class="menu_button"><i class="fa-solid fa-dna"></i> Open Franken-Swipe on Latest Message</button>
+                <small class="fs-settings-hint">Slash Command: <code>/frankenswipe [mesId]</code> or <code>/fswipe</code></small>
+            </div>
+        </div>
+    </div>
+</div>`;
+
+/* ==========================================================================
+   State Management & Utilities
+   ========================================================================== */
+
+let workspaceState = null;
+let isRecordingHotkey = false;
+let blockIdCounter = 1;
+let decorateDebounceTimer = null;
+
+function nextBlockId() {
+    return `fs_blk_${Date.now()}_${blockIdCounter++}`;
+}
+
+function safeClone(obj) {
+    if (obj === null || obj === undefined) return obj;
+    try {
+        return structuredClone(obj);
+    } catch {
+        try {
+            return JSON.parse(JSON.stringify(obj));
+        } catch {
+            return typeof obj === 'object' ? Object.assign({}, obj) : obj;
+        }
+    }
+}
+
+function getContext() {
+    return SillyTavern.getContext();
+}
+
+function getSettings() {
+    const { extensionSettings } = getContext();
+    if (!extensionSettings[MODULE_NAME]) {
+        extensionSettings[MODULE_NAME] = safeClone(DEFAULT_SETTINGS);
+    }
+    for (const [key, val] of Object.entries(DEFAULT_SETTINGS)) {
+        if (extensionSettings[MODULE_NAME][key] === undefined) {
+            extensionSettings[MODULE_NAME][key] = val;
+        }
+    }
+    return extensionSettings[MODULE_NAME];
+}
+
+function saveSettings() {
+    const { saveSettingsDebounced } = getContext();
+    if (typeof saveSettingsDebounced === 'function') {
+        saveSettingsDebounced();
+    }
+}
+
+function notify(type, message, title = 'Franken-Swipe') {
+    if (window.toastr && typeof window.toastr[type] === 'function') {
+        window.toastr[type](message, title);
+    } else {
+        console.log(`[${title}] (${type}): ${message}`);
+    }
+}
+
+function escapeHtml(str) {
+    return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function normalizeForComparison(text) {
+    return String(text ?? '')
+        .trim()
+        .replace(/\s+/g, ' ')
+        .toLowerCase();
+}
+
+/* ==========================================================================
+   Reasoning & Swipe Text Extraction
+   ========================================================================== */
+
+const INLINE_THINK_REGEX = /^\s*<(think|thinking)>([\s\S]*?)<\/\1>\s*/i;
+
+/**
+ * Extracts clean body text and reasoning from a swipe, handling both
+ * SillyTavern's `swipe_info[i].extra.reasoning` and inline `<think>` blocks.
+ */
+function extractSwipeData(msg, swipeIndex) {
+    const rawEntry = msg?.swipes?.[swipeIndex];
+    const rawSwipe = typeof rawEntry === 'string'
+        ? rawEntry
+        : String(rawEntry ?? (swipeIndex === Number(msg?.swipe_id ?? 0) ? msg?.mes : '') ?? '');
+
+    const swipeInfo = msg?.swipe_info?.[swipeIndex] ?? {};
+    const isCurrentSwipe = Number(msg?.swipe_id ?? 0) === swipeIndex;
+
+    let metadataReasoning = swipeInfo?.extra?.reasoning;
+    if ((metadataReasoning === undefined || metadataReasoning === null) && isCurrentSwipe) {
+        metadataReasoning = msg?.extra?.reasoning;
+    }
+
+    let bodyText = rawSwipe;
+    let inlineReasoning = '';
+    let inlineTag = null;
+
+    const match = rawSwipe.match(INLINE_THINK_REGEX);
+    if (match) {
+        inlineTag = match[1];
+        inlineReasoning = match[2].trim();
+        bodyText = rawSwipe.slice(match[0].length);
+    }
+
+    const effectiveReasoning = (metadataReasoning && String(metadataReasoning).trim())
+        ? String(metadataReasoning).trim()
+        : inlineReasoning;
+
+    return {
+        swipeIndex,
+        rawSwipe,
+        bodyText,
+        reasoning: effectiveReasoning || '',
+        hasMetadataReasoning: Boolean(metadataReasoning && String(metadataReasoning).trim()),
+        inlineTag,
+        sendDate: swipeInfo?.send_date || msg?.send_date || null,
+        extra: safeClone(swipeInfo?.extra || (isCurrentSwipe ? msg?.extra : {}) || {}),
     };
+}
 
-    /* ===================================================================
-     * Pure helpers (splitting, similarity, diff) — exported for tests
-     * =================================================================== */
+/* ==========================================================================
+   Flexible Text Splitting Engine (Paragraphs, Lines, Sentences, Dialogue)
+   ========================================================================== */
 
-    const SEGMENTER = (typeof Intl !== 'undefined' && Intl.Segmenter)
-        ? new Intl.Segmenter(undefined, { granularity: 'sentence' }) : null;
+function splitParagraphIntoSentences(paragraphText) {
+    const trimmed = paragraphText.trim();
+    if (!trimmed) return [];
 
-    const normKey = (t) => t.toLowerCase().replace(/\s+/g, ' ').replace(/[^\p{L}\p{N} ]/gu, '').trim();
-    const wordsOf = (t) => (t.toLowerCase().match(/[\p{L}\p{N}']+/gu) || []);
-    const wordCount = (t) => (t.match(/\S+/g) || []).length;
-
-    function splitSentences(par) {
-        let raws;
-        if (SEGMENTER) raws = Array.from(SEGMENTER.segment(par), s => s.segment);
-        else raws = par.match(/[^.!?…]+(?:[.!?…]+["”’')\]*_]*|$)\s*/g) || [par];
-        return raws.map(r => ({ text: r.trim(), sep: /\n\s*$/.test(r) ? '\n' : ' ' })).filter(x => x.text);
-    }
-
-    function splitDialogue(par) {
-        const parts = [];
-        const re = /“[^”]*”|"[^"]*"|[^"“”]+|["“”]/g;
-        let m;
-        while ((m = re.exec(par))) {
-            const raw = m[0];
-            const isDia = raw.length > 1 && /^["“]/.test(raw) && /["”]$/.test(raw);
-            const type = isDia ? 'dialogue' : 'narration';
-            const last = parts[parts.length - 1];
-            if (last && last.kind === type) last.raw += raw; else parts.push({ raw, kind: type });
+    if (typeof Intl !== 'undefined' && typeof Intl.Segmenter === 'function') {
+        try {
+            const segmenter = new Intl.Segmenter('en', { granularity: 'sentence' });
+            const segments = Array.from(segmenter.segment(trimmed), s => s.segment.trim()).filter(Boolean);
+            if (segments.length > 0) return segments;
+        } catch {
+            // Fall back to regex splitter
         }
-        return parts.map(p => ({ text: p.raw.trim(), kind: p.kind, sep: ' ' })).filter(p => p.text);
     }
 
-    /** Split text into selectable blocks: [{text, sep, kind?}] */
-    function splitBlocks(text, gran) {
-        const out = [];
-        const t = String(text || '').replace(/\r\n?/g, '\n').trim();
-        if (!t) return out;
-        if (gran === 'freehand') return [{ text: t, sep: '\n\n' }];
-        if (gran === 'lines') {
-            let blankBefore = false;
-            for (const line of t.split('\n')) {
-                const s = line.trim();
-                if (!s) { blankBefore = true; continue; }
-                if (blankBefore && out.length) out[out.length - 1].sep = '\n\n';
-                blankBefore = false;
-                out.push({ text: s, sep: '\n' });
+    const results = [];
+    const sentenceRegex = /[^.!?…]+(?:[.!?…]+["'”’»)*\]]*|\s*$)/g;
+    let match;
+    while ((match = sentenceRegex.exec(trimmed)) !== null) {
+        const piece = match[0].trim();
+        if (piece) results.push(piece);
+    }
+    return results.length > 0 ? results : [trimmed];
+}
+
+function splitParagraphIntoDialogue(paragraphText) {
+    const trimmed = paragraphText.trim();
+    if (!trimmed) return [];
+
+    const dialogueRegex = /("[^"\n]+?"|“[^”\n]+?”|«[^»\n]+?»)/g;
+    const parts = [];
+    let lastIndex = 0;
+    let match;
+
+    while ((match = dialogueRegex.exec(trimmed)) !== null) {
+        if (match.index > lastIndex) {
+            const narrationPart = trimmed.slice(lastIndex, match.index).trim();
+            if (narrationPart) {
+                parts.push({ text: narrationPart, kind: 'narration' });
             }
-            return out;
         }
-        const paras = t.split(/\n[ \t]*\n+/).map(p => p.trim()).filter(Boolean);
-        if (gran === 'paragraphs') return paras.map(p => ({ text: p, sep: '\n\n' }));
-        for (const p of paras) {
-            const pieces = gran === 'sentences' ? splitSentences(p) : splitDialogue(p);
-            pieces.forEach((pc, i) => { if (i === pieces.length - 1) pc.sep = '\n\n'; out.push(pc); });
+        const dialoguePart = match[0].trim();
+        if (dialoguePart) {
+            parts.push({ text: dialoguePart, kind: 'dialogue' });
         }
-        return out;
+        lastIndex = dialogueRegex.lastIndex;
     }
 
-    function shingles(t) {
-        const w = wordsOf(t), set = new Set();
-        if (w.length < 2) { w.forEach(x => set.add(x)); return set; }
-        for (let i = 0; i < w.length - 1; i++) set.add(w[i] + ' ' + w[i + 1]);
-        return set;
-    }
-    function jaccard(a, b) {
-        if (!a.size && !b.size) return 1;
-        let inter = 0;
-        for (const x of a) if (b.has(x)) inter++;
-        return inter / (a.size + b.size - inter);
+    if (lastIndex < trimmed.length) {
+        const tail = trimmed.slice(lastIndex).trim();
+        if (tail) {
+            parts.push({ text: tail, kind: 'narration' });
+        }
     }
 
-    function lcsDiff(a, b, same) {
-        let s = 0;
-        while (s < a.length && s < b.length && same(a[s], b[s])) s++;
-        let ea = a.length, eb = b.length;
-        while (ea > s && eb > s && same(a[ea - 1], b[eb - 1])) { ea--; eb--; }
-        const A = a.slice(s, ea), B = b.slice(s, eb), n = A.length, m = B.length;
-        const ops = [];
-        for (let i = 0; i < s; i++) ops.push({ t: 'eq', a: a[i], b: b[i] });
-        if (n * m > 4e6) {
-            A.forEach(x => ops.push({ t: 'del', a: x }));
-            B.forEach(x => ops.push({ t: 'ins', b: x }));
+    return parts.length > 0 ? parts : [{ text: trimmed, kind: 'narration' }];
+}
+
+function splitSwipeText(text, granularity) {
+    const clean = String(text ?? '').replace(/\r\n/g, '\n').trim();
+    if (!clean) return [];
+
+    const paragraphs = clean.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+
+    if (granularity === 'paragraphs') {
+        return paragraphs.map((p, idx) => ({
+            blockIndex: idx,
+            paragraphIndex: idx,
+            text: p,
+            kind: 'paragraph',
+            joinAfter: '\n\n',
+            norm: normalizeForComparison(p),
+        }));
+    }
+
+    if (granularity === 'lines') {
+        const lines = clean.split(/\n/).map(l => l.trim()).filter(Boolean);
+        return lines.map((l, idx) => ({
+            blockIndex: idx,
+            paragraphIndex: idx,
+            text: l,
+            kind: 'line',
+            joinAfter: '\n',
+            norm: normalizeForComparison(l),
+        }));
+    }
+
+    if (granularity === 'sentences') {
+        const blocks = [];
+        paragraphs.forEach((para, pIdx) => {
+            const sentences = splitParagraphIntoSentences(para);
+            sentences.forEach((s, sIdx) => {
+                const isLastInPara = sIdx === sentences.length - 1;
+                blocks.push({
+                    blockIndex: blocks.length,
+                    paragraphIndex: pIdx,
+                    text: s,
+                    kind: 'sentence',
+                    joinAfter: isLastInPara ? '\n\n' : ' ',
+                    norm: normalizeForComparison(s),
+                });
+            });
+        });
+        return blocks;
+    }
+
+    if (granularity === 'dialogue') {
+        const blocks = [];
+        paragraphs.forEach((para, pIdx) => {
+            const segments = splitParagraphIntoDialogue(para);
+            segments.forEach((seg, sIdx) => {
+                const isLastInPara = sIdx === segments.length - 1;
+                blocks.push({
+                    blockIndex: blocks.length,
+                    paragraphIndex: pIdx,
+                    text: seg.text,
+                    kind: seg.kind,
+                    joinAfter: isLastInPara ? '\n\n' : ' ',
+                    norm: normalizeForComparison(seg.text),
+                });
+            });
+        });
+        return blocks;
+    }
+
+    return [];
+}
+
+/* ==========================================================================
+   Similarity & Word-Level Visual Diff Engines
+   ========================================================================== */
+
+function extractWordShingles(text) {
+    const words = normalizeForComparison(text)
+        .replace(/[^\p{L}\p{N}\s]/gu, '')
+        .split(/\s+/)
+        .filter(Boolean);
+
+    if (words.length === 0) return new Set();
+    if (words.length < 3) return new Set(words);
+
+    const shingles = new Set();
+    for (let i = 0; i < words.length - 1; i++) {
+        shingles.add(`${words[i]} ${words[i + 1]}`);
+    }
+    return shingles;
+}
+
+function computeJaccardSimilarity(setA, setB) {
+    if (setA.size === 0 && setB.size === 0) return 1;
+    if (setA.size === 0 || setB.size === 0) return 0;
+    let intersection = 0;
+    for (const item of setA) {
+        if (setB.has(item)) intersection++;
+    }
+    const union = setA.size + setB.size - intersection;
+    return union === 0 ? 0 : intersection / union;
+}
+
+function computeWordDiffHtml(textA, textB) {
+    const tokensA = String(textA ?? '').trim().split(/(\s+)/).filter(Boolean);
+    const tokensB = String(textB ?? '').trim().split(/(\s+)/).filter(Boolean);
+
+    if (tokensA.length * tokensB.length > 250000) {
+        if (normalizeForComparison(textA) === normalizeForComparison(textB)) {
+            const safe = escapeHtml(textA);
+            return { leftHtml: safe, rightHtml: safe };
+        }
+        return {
+            leftHtml: `<del class="fs-diff-del">${escapeHtml(textA)}</del>`,
+            rightHtml: `<ins class="fs-diff-ins">${escapeHtml(textB)}</ins>`,
+        };
+    }
+
+    const m = tokensA.length;
+    const n = tokensB.length;
+    const dp = Array.from({ length: m + 1 }, () => new Uint16Array(n + 1));
+
+    for (let i = m - 1; i >= 0; i--) {
+        for (let j = n - 1; j >= 0; j--) {
+            if (tokensA[i] === tokensB[j]) {
+                dp[i][j] = dp[i + 1][j + 1] + 1;
+            } else {
+                dp[i][j] = Math.max(dp[i + 1][j], dp[i][j + 1]);
+            }
+        }
+    }
+
+    let i = 0;
+    let j = 0;
+    const leftParts = [];
+    const rightParts = [];
+
+    while (i < m && j < n) {
+        if (tokensA[i] === tokensB[j]) {
+            const escaped = escapeHtml(tokensA[i]);
+            leftParts.push(escaped);
+            rightParts.push(escaped);
+            i++;
+            j++;
+        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+            const tok = tokensA[i++];
+            leftParts.push(/^\s+$/.test(tok) ? tok : `<del class="fs-diff-del">${escapeHtml(tok)}</del>`);
         } else {
-            const w = m + 1, dp = new Uint16Array((n + 1) * w);
-            for (let i = n - 1; i >= 0; i--) {
-                for (let j = m - 1; j >= 0; j--) {
-                    dp[i * w + j] = same(A[i], B[j]) ? dp[(i + 1) * w + j + 1] + 1 : Math.max(dp[(i + 1) * w + j], dp[i * w + j + 1]);
+            const tok = tokensB[j++];
+            rightParts.push(/^\s+$/.test(tok) ? tok : `<ins class="fs-diff-ins">${escapeHtml(tok)}</ins>`);
+        }
+    }
+    while (i < m) {
+        const tok = tokensA[i++];
+        leftParts.push(/^\s+$/.test(tok) ? tok : `<del class="fs-diff-del">${escapeHtml(tok)}</del>`);
+    }
+    while (j < n) {
+        const tok = tokensB[j++];
+        rightParts.push(/^\s+$/.test(tok) ? tok : `<ins class="fs-diff-ins">${escapeHtml(tok)}</ins>`);
+    }
+
+    return {
+        leftHtml: leftParts.join(''),
+        rightHtml: rightParts.join(''),
+    };
+}
+
+/* ==========================================================================
+   Draft Assembly & Reasoning Resolution
+   ========================================================================== */
+
+function assembleDraftText(state) {
+    if (state.rawEditorMode) {
+        return state.rawText;
+    }
+    if (!state.draftBlocks.length) {
+        return '';
+    }
+    let output = '';
+    for (let i = 0; i < state.draftBlocks.length; i++) {
+        const blk = state.draftBlocks[i];
+        output += blk.text;
+        if (i < state.draftBlocks.length - 1) {
+            output += blk.joinAfter ?? '\n\n';
+        }
+    }
+    return output;
+}
+
+function countStats(text) {
+    const clean = String(text ?? '').trim();
+    if (!clean) {
+        return { words: 0, chars: 0, estTokens: 0 };
+    }
+    const words = clean.split(/\s+/).filter(Boolean).length;
+    const chars = clean.length;
+    const estTokens = Math.max(1, Math.round(chars / 3.8));
+    return { words, chars, estTokens };
+}
+
+function getPrimaryDonorIndex(state) {
+    const charCounts = new Map();
+    for (const blk of state.draftBlocks) {
+        if (typeof blk.swipeIndex === 'number' && blk.swipeIndex >= 0) {
+            const prev = charCounts.get(blk.swipeIndex) || 0;
+            charCounts.set(blk.swipeIndex, prev + (blk.text?.length || 0));
+        }
+    }
+    let bestSwipe = state.activeSwipeIndex;
+    let bestCount = -1;
+    for (const [sIdx, count] of charCounts.entries()) {
+        if (count > bestCount) {
+            bestCount = count;
+            bestSwipe = sIdx;
+        }
+    }
+    return bestSwipe;
+}
+
+function computeResolvedReasoning(state) {
+    if (state.reasoningManuallyEdited) {
+        return state.customReasoningText;
+    }
+
+    const mode = state.reasoningMode;
+    if (mode === 'none') {
+        return '';
+    }
+
+    if (mode === 'active_swipe') {
+        return state.swipes[state.activeSwipeIndex]?.reasoning || '';
+    }
+
+    if (mode === 'primary_donor') {
+        const primaryIdx = getPrimaryDonorIndex(state);
+        return state.swipes[primaryIdx]?.reasoning || '';
+    }
+
+    if (mode === 'combine') {
+        const usedIndices = [];
+        for (const blk of state.draftBlocks) {
+            if (typeof blk.swipeIndex === 'number' && blk.swipeIndex >= 0 && !usedIndices.includes(blk.swipeIndex)) {
+                usedIndices.push(blk.swipeIndex);
+            }
+        }
+        const indicesToCombine = usedIndices.length > 0
+            ? usedIndices
+            : [state.activeSwipeIndex];
+
+        const seenNorms = new Set();
+        const combinedParts = [];
+        for (const idx of indicesToCombine) {
+            const r = (state.swipes[idx]?.reasoning || '').trim();
+            if (!r) continue;
+            const norm = normalizeForComparison(r);
+            if (seenNorms.has(norm)) continue;
+            seenNorms.add(norm);
+            if (indicesToCombine.length > 1) {
+                combinedParts.push(`[Swipe #${idx + 1} Reasoning]\n${r}`);
+            } else {
+                combinedParts.push(r);
+            }
+        }
+        return combinedParts.join('\n\n---\n\n');
+    }
+
+    if (mode.startsWith('swipe_')) {
+        const idx = Number(mode.replace('swipe_', ''));
+        return state.swipes[idx]?.reasoning || '';
+    }
+
+    return '';
+}
+
+/* ==========================================================================
+   Workspace State Preparation & Undo/Redo Stack
+   ========================================================================== */
+
+function rebuildParsedSwipes(state) {
+    const seenBlockMap = new Map();
+
+    state.parsedSwipes = state.swipes.map((sw) => {
+        const blocks = splitSwipeText(sw.bodyText, state.granularity);
+        const enrichedBlocks = blocks.map((blk) => {
+            let duplicateOf = null;
+            if (blk.norm.length > 0) {
+                if (seenBlockMap.has(blk.norm)) {
+                    duplicateOf = seenBlockMap.get(blk.norm);
+                } else {
+                    seenBlockMap.set(blk.norm, sw.swipeIndex);
                 }
             }
-            let i = 0, j = 0;
-            while (i < n && j < m) {
-                if (same(A[i], B[j])) { ops.push({ t: 'eq', a: A[i], b: B[j] }); i++; j++; }
-                else if (dp[(i + 1) * w + j] >= dp[i * w + j + 1]) ops.push({ t: 'del', a: A[i++] });
-                else ops.push({ t: 'ins', b: B[j++] });
-            }
-            while (i < n) ops.push({ t: 'del', a: A[i++] });
-            while (j < m) ops.push({ t: 'ins', b: B[j++] });
-        }
-        for (let i = ea; i < a.length; i++) ops.push({ t: 'eq', a: a[i], b: b[eb + (i - ea)] });
-        return ops;
-    }
-
-    const isWs = (x) => /^\s+$/.test(x);
-    function diffWords(a, b) {
-        let ta = a.match(/\s+|\S+/g) || [], tb = b.match(/\s+|\S+/g) || [];
-        let same = (x, y) => (isWs(x) && isWs(y)) || x === y;
-        if (ta.length * tb.length > 4e6) {
-            ta = a.match(/[^.!?\n]+[.!?]*\s*|\n+/g) || [];
-            tb = b.match(/[^.!?\n]+[.!?]*\s*|\n+/g) || [];
-            same = (x, y) => x.trim() === y.trim();
-        }
-        return lcsDiff(ta, tb, same);
-    }
-
-    if (typeof module !== 'undefined' && module.exports) {
-        module.exports = { splitBlocks, shingles, jaccard, diffWords, normKey, wordCount };
-        return; // Node test environment: stop before touching the DOM
-    }
-
-    /* ===================================================================
-     * SillyTavern glue
-     * =================================================================== */
-
-    const getCtx = () => SillyTavern.getContext();
-
-    function getSettings() {
-        const c = getCtx();
-        if (!c.extensionSettings[MODULE]) c.extensionSettings[MODULE] = {};
-        const s = c.extensionSettings[MODULE];
-        for (const k of Object.keys(DEFAULTS)) if (s[k] === undefined) s[k] = DEFAULTS[k];
-        return s;
-    }
-    const persist = () => getCtx().saveSettingsDebounced();
-
-    function h(tag, attrs = {}, kids = []) {
-        const el = document.createElement(tag);
-        for (const [k, v] of Object.entries(attrs)) {
-            if (v == null || v === false) continue;
-            if (k === 'class') el.className = v;
-            else if (k === 'style') el.style.cssText = v;
-            else if (k === 'text') el.textContent = v;
-            else if (k === 'dataset') Object.assign(el.dataset, v);
-            else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
-            else el.setAttribute(k, v === true ? '' : v);
-        }
-        for (const kid of [].concat(kids)) {
-            if (kid != null && kid !== false) el.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
-        }
-        return el;
-    }
-    const icon = (cls) => h('i', { class: 'fa-solid ' + cls });
-    const ibtn = (cls, title, onclick, extra = '') => h('button', { type: 'button', class: 'fs-ibtn ' + extra, title, onclick }, [icon(cls)]);
-    function sel(opts, value, onchange, cls = '') {
-        const s = h('select', { class: 'fs-select text_pole ' + cls });
-        for (const [v, l] of opts) {
-            const o = h('option', { value: v, text: l });
-            if (String(v) === String(value)) o.selected = true;
-            s.append(o);
-        }
-        s.addEventListener('change', () => onchange(s.value));
-        return s;
-    }
-    const color = (i) => `hsl(${(i * 57 + 10) % 360} 65% 55%)`;
-    let uidN = 0;
-    const uid = () => 'fb' + (++uidN) + Date.now().toString(36);
-
-    async function confirmDlg(text) {
-        const c = getCtx();
-        try {
-            if (c.callGenericPopup && c.POPUP_TYPE) return !!(await c.callGenericPopup(text, c.POPUP_TYPE.CONFIRM));
-        } catch { /* fall through */ }
-        return window.confirm(text);
-    }
-
-    const getExtra = (mes, i) => (i === mes.swipe_id ? (mes.extra || {}) : (mes.swipe_info?.[i]?.extra || {}));
-
-    /* ===================================================================
-     * Workspace state
-     * =================================================================== */
-    let S = null;         // state
-    let overlay = null;   // root element
-    let els = {};         // cached element refs
-    let selTimer = null;
-    let pendingSel = null;
-
-    const visibleSwipes = () => S.swipes.filter(s => !s.hidden);
-
-    function openLatest(forcedId = null) {
-        const c = getCtx();
-        if (!c.chat?.length) return toastr.info('No messages in this chat.', NAME);
-        const id = (forcedId != null && !Number.isNaN(forcedId)) ? forcedId : c.chat.length - 1;
-        openWorkspace(id);
-    }
-
-    function openWorkspace(mesId) {
-        const c = getCtx();
-        const mes = c.chat[mesId];
-        if (!mes) return toastr.warning('Message not found.', NAME);
-        if (!Array.isArray(mes.swipes) || mes.swipes.length < 2) {
-            return toastr.info(`Message #${mesId} needs at least two swipes.`, NAME);
-        }
-        if (overlay) closeWorkspace(true);
-        const st = getSettings();
-        const swipes = mes.swipes.map((text, i) => {
-            const ex = getExtra(mes, i);
-            return { idx: i, text: String(text ?? ''), reasoning: String(ex.reasoning || ''), extra: ex, hidden: false, sh: null, sim: null, cache: null };
+            return {
+                ...blk,
+                swipeIndex: sw.swipeIndex,
+                duplicateOf,
+            };
         });
-        const cur = mes.swipe_id ?? 0;
-        const other = swipes.find(s => s.idx !== cur);
-        S = {
-            mesId, mes, swipes, gran: st.granularity, layout: st.layout, dup: st.dupMode,
-            draft: [], sel: null, raw: false, rawText: '', rawBase: '', undo: [], dirty: false,
-            diffA: String(cur), diffB: String(other ? other.idx : cur),
-            primary: 'auto', saveMode: st.saveMode, reasoningMode: st.reasoningMode, target: cur,
+        return {
+            ...sw,
+            blocks: enrichedBlocks,
         };
-        buildOverlay();
-        computeSims();
-        renderToolbar(); renderSource(); renderDraft(); renderFoot();
+    });
+}
+
+function pushUndoSnapshot(state) {
+    const snapshot = {
+        draftBlocks: safeClone(state.draftBlocks),
+        rawText: state.rawText,
+        rawEditorMode: state.rawEditorMode,
+    };
+    state.undoStack.push(snapshot);
+    if (state.undoStack.length > 40) {
+        state.undoStack.shift();
+    }
+    state.redoStack = [];
+}
+
+function performUndo(state) {
+    if (state.undoStack.length === 0) return;
+    state.redoStack.push({
+        draftBlocks: safeClone(state.draftBlocks),
+        rawText: state.rawText,
+        rawEditorMode: state.rawEditorMode,
+    });
+    const prev = state.undoStack.pop();
+    state.draftBlocks = prev.draftBlocks;
+    state.rawText = prev.rawText;
+    state.rawEditorMode = prev.rawEditorMode;
+    state.replaceTargetId = null;
+    renderWorkspace();
+}
+
+function performRedo(state) {
+    if (state.redoStack.length === 0) return;
+    state.undoStack.push({
+        draftBlocks: safeClone(state.draftBlocks),
+        rawText: state.rawText,
+        rawEditorMode: state.rawEditorMode,
+    });
+    const next = state.redoStack.pop();
+    state.draftBlocks = next.draftBlocks;
+    state.rawText = next.rawText;
+    state.rawEditorMode = next.rawEditorMode;
+    state.replaceTargetId = null;
+    renderWorkspace();
+}
+
+function loadSwipeAsBase(state, swipeIndex) {
+    const targetSwipe = state.parsedSwipes[swipeIndex];
+    if (!targetSwipe) return;
+
+    pushUndoSnapshot(state);
+    state.draftBlocks = targetSwipe.blocks.map(blk => ({
+        id: nextBlockId(),
+        swipeIndex: blk.swipeIndex,
+        sourceBlockIndex: blk.blockIndex,
+        text: blk.text,
+        kind: blk.kind,
+        joinAfter: blk.joinAfter || '\n\n',
+        edited: false,
+        norm: blk.norm,
+    }));
+    state.rawText = assembleDraftText({ ...state, rawEditorMode: false });
+    state.replaceTargetId = null;
+    if (!state.reasoningManuallyEdited) {
+        state.customReasoningText = computeResolvedReasoning(state);
+    }
+    renderWorkspace();
+}
+
+function addBlockToDraft(state, donorBlock, customLabel = null) {
+    pushUndoSnapshot(state);
+
+    const newDraftBlock = {
+        id: nextBlockId(),
+        swipeIndex: donorBlock.swipeIndex,
+        sourceBlockIndex: donorBlock.blockIndex ?? null,
+        customLabel,
+        text: donorBlock.text,
+        kind: donorBlock.kind || 'paragraph',
+        joinAfter: donorBlock.joinAfter || '\n\n',
+        edited: false,
+        norm: normalizeForComparison(donorBlock.text),
+    };
+
+    if (state.rawEditorMode) {
+        const sep = state.rawText.trim().length > 0 ? '\n\n' : '';
+        state.rawText = `${state.rawText}${sep}${donorBlock.text}`;
+        state.draftBlocks.push(newDraftBlock);
+        renderWorkspace();
+        return;
     }
 
-    async function closeWorkspace(force = false) {
-        if (!overlay) return;
-        if (!force && S?.dirty && joinDraft().trim()) {
-            if (!(await confirmDlg('Discard your stitched draft?'))) return;
-        }
-        document.removeEventListener('selectionchange', onSelectionChange);
-        overlay.remove(); overlay = null; els = {}; S = null; pendingSel = null;
-    }
-
-    /* ---------- draft model ---------- */
-    function joinDraft() {
-        if (S.raw) return S.rawText;
-        return S.draft.map((b, i) => b.text + (i < S.draft.length - 1 ? b.sep : '')).join('');
-    }
-    function pushUndo() {
-        S.undo.push(JSON.stringify(S.draft));
-        if (S.undo.length > 60) S.undo.shift();
-    }
-    function undo() {
-        if (S.raw) leaveRaw();
-        const prev = S.undo.pop();
-        if (!prev) return;
-        S.draft = JSON.parse(prev); S.sel = null;
-        renderDraft(); renderSource(); renderFoot();
-    }
-    function enterRaw() { S.rawText = joinDraft(); S.rawBase = S.rawText; S.raw = true; }
-    function leaveRaw() {
-        if (!S.raw) return;
-        S.raw = false;
-        if (S.rawText === S.rawBase) return; // untouched -> keep block structure
-        pushUndo();
-        const old = new Map(S.draft.map(d => [d.text.trim(), d]));
-        S.draft = S.rawText.replace(/\r\n?/g, '\n').split(/\n[ \t]*\n+/).map(p => p.trim()).filter(Boolean).map(p => {
-            const o = old.get(p);
-            return { id: uid(), text: p, sep: '\n\n', src: o?.src ?? null, srcs: o?.srcs ?? [], from: o?.from ?? null, kind: null };
-        });
-        S.sel = null;
-    }
-    function addBlock(b, afterId = null) {
-        if (S.raw) { leaveRaw(); renderToolbar(); }
-        pushUndo();
-        const nb = {
-            id: uid(), text: b.text, sep: b.sep || '\n\n', src: b.src ?? null,
-            srcs: b.src != null ? [b.src] : [], from: b.from || null, kind: b.kind || null,
-        };
-        let pos = S.draft.length;
-        const ref = afterId ?? S.sel;
-        const ri = S.draft.findIndex(x => x.id === ref);
-        if (ri >= 0) pos = ri + 1;
-        S.draft.splice(pos, 0, nb);
-        S.sel = nb.id; S.dirty = true;
-        renderDraft(); renderSource(); renderFoot();
-        els.draftBody.querySelector(`[data-id="${nb.id}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-        return nb;
-    }
-    function moveBlock(id, toIndex) {
-        const from = S.draft.findIndex(d => d.id === id);
-        if (from < 0 || toIndex < 0 || toIndex >= S.draft.length || from === toIndex) return;
-        pushUndo();
-        const [b] = S.draft.splice(from, 1);
-        S.draft.splice(toIndex, 0, b);
-        S.dirty = true; renderDraft();
-    }
-    function removeBlock(id) {
-        pushUndo();
-        S.draft = S.draft.filter(d => d.id !== id);
-        if (S.sel === id) S.sel = null;
-        S.dirty = true; renderDraft(); renderSource(); renderFoot();
-    }
-    function mergeNext(i) {
-        const a = S.draft[i], b = S.draft[i + 1];
-        if (!a || !b) return;
-        pushUndo();
-        a.text = a.text.replace(/\s+$/, '') + ' ' + b.text.replace(/^\s+/, '');
-        a.sep = b.sep;
-        a.srcs = [...new Set([...(a.srcs || []), ...(b.srcs || [])])];
-        a.from = null; a.kind = null;
-        S.draft.splice(i + 1, 1);
-        S.dirty = true; renderDraft(); renderSource(); renderFoot();
-    }
-    async function useBase(idx) {
-        if (S.draft.length && !(await confirmDlg(`Replace the current draft with all of swipe #${idx + 1}?`))) return;
-        pushUndo();
-        S.raw = false;
-        const g = S.gran === 'freehand' ? 'paragraphs' : S.gran;
-        S.draft = splitBlocks(S.swipes[idx].text, g).map((b, i) => ({
-            id: uid(), text: b.text, sep: b.sep, src: idx, srcs: [idx], from: `${idx}|${g}|${i}`, kind: b.kind || null,
-        }));
-        S.sel = null; S.dirty = true;
-        renderToolbar(); renderDraft(); renderSource(); renderFoot();
-    }
-
-    function donorWeights() {
-        const w = {};
-        for (const d of S.draft) {
-            const srcs = d.srcs?.length ? d.srcs : (d.src != null ? [d.src] : []);
-            for (const i of srcs) w[i] = (w[i] || 0) + d.text.length / srcs.length;
-        }
-        return w;
-    }
-    function primaryDonor() {
-        if (S.primary !== 'auto') return +S.primary;
-        const w = donorWeights();
-        let best = null, bv = -1;
-        for (const k of Object.keys(w)) if (w[k] > bv) { bv = w[k]; best = +k; }
-        return best ?? S.mes.swipe_id;
-    }
-
-    /* ---------- similarity & duplicates ---------- */
-    function computeSims() {
-        const vis = visibleSwipes();
-        for (const s of S.swipes) if (!s.sh) s.sh = shingles(s.text);
-        for (const s of S.swipes) {
-            const others = vis.filter(o => o !== s);
-            s.sim = others.length ? others.reduce((a, o) => a + jaccard(s.sh, o.sh), 0) / others.length : null;
-        }
-    }
-    function blocksOf(sw) {
-        if (!sw.cache || sw.cache.gran !== S.gran) sw.cache = { gran: S.gran, blocks: splitBlocks(sw.text, S.gran) };
-        return sw.cache.blocks;
-    }
-    function computeDups(vis) {
-        const keySets = new Map(vis.map(s => [s, new Set(blocksOf(s).map(b => normKey(b.text)))]));
-        for (const s of vis) {
-            for (const b of blocksOf(s)) {
-                const k = normKey(b.text);
-                b.dups = k ? vis.filter(o => o !== s && keySets.get(o).has(k)).length : 0;
+    if (state.replaceTargetId) {
+        const targetIdx = state.draftBlocks.findIndex(b => b.id === state.replaceTargetId);
+        if (targetIdx !== -1) {
+            newDraftBlock.joinAfter = state.draftBlocks[targetIdx].joinAfter || newDraftBlock.joinAfter;
+            state.draftBlocks[targetIdx] = newDraftBlock;
+            state.replaceTargetId = null;
+            state.rawText = assembleDraftText(state);
+            if (!state.reasoningManuallyEdited) {
+                state.customReasoningText = computeResolvedReasoning(state);
             }
+            renderWorkspace();
+            return;
         }
+        state.replaceTargetId = null;
     }
 
-    /* ===================================================================
-     * UI construction
-     * =================================================================== */
-    function buildOverlay() {
-        els.title = h('div', { class: 'fs-title' });
-        els.toolbar = h('div', { class: 'fs-toolbar' });
-        els.source = h('div', { class: 'fs-source' });
-        els.counter = h('span', { class: 'fs-counter' });
-        els.undoBtn = ibtn('fa-rotate-left', 'Undo last draft change', undo);
-        els.rawBtn = h('button', { type: 'button', class: 'fs-btn', onclick: toggleRaw }, [icon('fa-pen-to-square'), ' Raw edit']);
-        els.draftBody = h('div', { class: 'fs-draft-body' });
-        els.foot = h('div', { class: 'fs-draft-foot' });
-        els.selBtn = h('button', { type: 'button', class: 'fs-selbtn', style: 'display:none' }, [icon('fa-plus'), ' Add selection']);
-        els.selBtn.addEventListener('mousedown', e => e.preventDefault());
-        els.selBtn.addEventListener('click', () => {
-            if (!pendingSel) return;
-            addBlock({ text: pendingSel.text, sep: ' ', src: pendingSel.src, from: null });
-            window.getSelection()?.removeAllRanges();
-            els.selBtn.style.display = 'none'; pendingSel = null;
-        });
+    state.draftBlocks.push(newDraftBlock);
+    state.rawText = assembleDraftText(state);
+    if (!state.reasoningManuallyEdited) {
+        state.customReasoningText = computeResolvedReasoning(state);
+    }
+    renderWorkspace();
+}
 
-        const clearBtn = h('button', { type: 'button', class: 'fs-btn', onclick: async () => {
-            if (!S.draft.length && !S.rawText) return;
-            if (!(await confirmDlg('Clear the whole draft?'))) return;
-            pushUndo(); S.draft = []; S.raw = false; S.rawText = ''; S.sel = null;
-            renderToolbar(); renderDraft(); renderSource(); renderFoot();
-        } }, [icon('fa-trash'), ' Clear']);
+/* ==========================================================================
+   Opening the Franken-Swipe Workspace
+   ========================================================================== */
 
-        overlay = h('div', { id: 'franken_swipe_overlay', class: 'fs-overlay' }, [
-            h('div', { class: 'fs-window' }, [
-                h('div', { class: 'fs-head' }, [els.title, ibtn('fa-xmark', 'Close (Esc)', () => closeWorkspace(), 'fs-close')]),
-                els.toolbar,
-                h('div', { class: 'fs-main' }, [
-                    els.source,
-                    h('div', { class: 'fs-draftpanel' }, [
-                        h('div', { class: 'fs-draft-head' }, [
-                            h('b', { text: 'Stitched draft' }), els.counter,
-                            h('span', { class: 'fs-spacer' }), els.undoBtn, els.rawBtn, clearBtn,
-                        ]),
-                        els.draftBody, els.foot,
-                    ]),
-                ]),
-                els.selBtn,
-            ]),
-        ]);
-        const c = getCtx();
-        const who = S.mes.name || c.name2 || 'message';
-        els.title.append(icon('fa-puzzle-piece'), ` Franken-Swipe — #${S.mesId} · ${who} · ${S.swipes.length} swipes`);
-        overlay.addEventListener('mousedown', e => { if (e.target === overlay) overlay.dataset.bg = '1'; });
-        overlay.addEventListener('click', e => { if (e.target === overlay && overlay.dataset.bg) closeWorkspace(); delete overlay.dataset.bg; });
-        document.body.append(overlay);
-        document.addEventListener('selectionchange', onSelectionChange);
+export function openFrankenSwipeWorkspace(messageId) {
+    const context = getContext();
+    const chat = context.chat;
+    const numericId = Number(messageId);
+
+    if (!Array.isArray(chat) || isNaN(numericId) || !chat[numericId]) {
+        notify('warning', `Message #${messageId} was not found in the active chat.`);
+        return;
     }
 
-    function toggleRaw() {
-        if (S.raw) leaveRaw(); else enterRaw();
-        renderDraft(); renderSource(); renderFoot();
+    const msg = chat[numericId];
+    if (!Array.isArray(msg.swipes) || msg.swipes.length < 2) {
+        notify('info', 'This message has fewer than 2 swipes. Generate at least 2 swipes to stitch them together.');
+        return;
     }
 
-    function renderToolbar() {
-        const t = els.toolbar; t.replaceChildren();
-        const diff = S.layout === 'diff';
-        const gran = sel([['paragraphs', 'Paragraphs'], ['lines', 'Lines'], ['sentences', 'Sentences'], ['dialogue', 'Dialogue / narration'], ['freehand', 'Freehand (select text)']],
-            S.gran, v => { S.gran = v; renderSource(); });
-        gran.disabled = diff;
-        const seg = h('div', { class: 'fs-seg' }, [['rows', 'Aligned rows', 'fa-table-list'], ['columns', 'Columns', 'fa-table-columns'], ['diff', 'Diff', 'fa-code-compare']]
-            .map(([v, l, ic]) => h('button', { type: 'button', class: 'fs-segbtn' + (S.layout === v ? ' active' : ''), onclick: () => { S.layout = v; renderToolbar(); renderSource(); } }, [icon(ic), ' ', l])));
-        const dup = sel([['dim', 'Dim duplicates'], ['collapse', 'Collapse duplicates'], ['off', 'Show duplicates']], S.dup, v => { S.dup = v; renderSource(); });
-        dup.disabled = diff;
-        const chips = h('div', { class: 'fs-chips' }, S.swipes.map(sw => h('button', {
-            type: 'button', class: 'fs-chip' + (sw.hidden ? ' off' : ''), style: `--fs-c:${color(sw.idx)}`,
-            title: 'Click to hide / show this swipe', onclick: () => { sw.hidden = !sw.hidden; computeSims(); renderToolbar(); renderSource(); },
-        }, [h('span', { class: 'fs-dot' }), `#${sw.idx + 1}`, sw.idx === S.mes.swipe_id ? ' ★' : '',
-            sw.sim != null && !sw.hidden ? h('small', { text: ` ${Math.round(sw.sim * 100)}%` }) : ''])));
-        t.append(
-            h('label', {}, ['Split by ', gran]), seg, h('label', {}, [dup]),
-            h('span', { class: 'fs-spacer' }), h('span', { class: 'fs-muted', text: 'Swipes:' }), chips,
-        );
-    }
+    // Close any previous modal BEFORE creating the new workspaceState
+    closeWorkspaceModal();
 
-    function headerEl(sw) {
-        const pct = sw.sim != null ? Math.round(sw.sim * 100) : null;
-        return h('div', { class: 'fs-colhead', style: `--fs-c:${color(sw.idx)}` }, [
-            h('span', { class: 'fs-dot' }),
-            h('b', { text: `Swipe #${sw.idx + 1}` }),
-            sw.idx === S.mes.swipe_id ? h('span', { class: 'fs-badge', text: 'current' }) : '',
-            pct != null ? h('span', { class: 'fs-sim', title: `Average similarity to the other visible swipes: ${pct}%` }, [
-                h('span', { class: 'fs-simbar' }, [h('span', { style: `width:${pct}%` })]), h('small', { text: pct + '%' }),
-            ]) : '',
-            h('span', { class: 'fs-spacer' }),
-            h('small', { class: 'fs-muted', text: wordCount(sw.text) + 'w' }),
-            ibtn('fa-layer-group', 'Use this whole swipe as the base of the draft', () => useBase(sw.idx)),
-            ibtn('fa-eye-slash', 'Hide this swipe', () => { sw.hidden = true; computeSims(); renderToolbar(); renderSource(); }),
-        ]);
-    }
+    const settings = getSettings();
+    const activeSwipeIndex = Math.min(
+        Math.max(0, Number(msg.swipe_id ?? 0)),
+        msg.swipes.length - 1,
+    );
 
-    function blockEl(sw, b, i) {
-        const key = `${sw.idx}|${S.gran}|${i}`;
-        const used = S.draft.some(d => d.from === key);
-        const free = S.gran === 'freehand';
-        const dupCls = S.dup !== 'off' && b.dups ? (S.dup === 'collapse' ? ' fs-dup fs-collapsed' : ' fs-dup') : '';
-        const el = h('div', {
-            class: 'fs-block' + dupCls + (used ? ' fs-used' : '') + (b.kind ? ' fs-' + b.kind : '') + (free ? ' fs-freehand' : ''),
-            style: `--fs-c:${color(sw.idx)}`, dataset: { sw: sw.idx },
-            title: free ? 'Select any text, then press “Add selection”' : (b.dups ? `Identical in ${b.dups} other swipe(s) — click to add` : 'Click to add to the draft'),
-        }, [
-            h('div', { class: 'fs-block-text', text: b.text }),
-            !free ? h('span', { class: 'fs-addicon' }, [icon(used ? 'fa-check' : 'fa-plus')]) : '',
-            S.dup !== 'off' && b.dups ? h('span', { class: 'fs-eq', text: '=×' + (b.dups + 1) }) : '',
-            b.kind ? h('span', { class: 'fs-kind', text: b.kind === 'dialogue' ? '“ ”' : '✱' }) : '',
-        ]);
-        if (!free) {
-            el.addEventListener('click', () => {
-                if (String(window.getSelection() || '').trim()) return; // user is selecting text
-                addBlock({ text: b.text, sep: b.sep, src: sw.idx, from: key, kind: b.kind });
+    const swipes = msg.swipes.map((_, idx) => extractSwipeData(msg, idx));
+    const shingleSets = swipes.map(s => extractWordShingles(s.bodyText));
+    const activeShingles = shingleSets[activeSwipeIndex];
+
+    swipes.forEach((s, idx) => {
+        if (idx === activeSwipeIndex) {
+            let sum = 0;
+            let count = 0;
+            shingleSets.forEach((otherSet, oIdx) => {
+                if (oIdx !== idx) {
+                    sum += computeJaccardSimilarity(activeShingles, otherSet);
+                    count++;
+                }
             });
-        }
-        return el;
-    }
-
-    function renderSource() {
-        const root = els.source;
-        const scroll = root.scrollTop;
-        root.replaceChildren();
-        if (S.layout === 'diff') { renderDiff(root); return; }
-        const vis = visibleSwipes();
-        if (!vis.length) { root.append(h('div', { class: 'fs-empty-msg', text: 'All swipes are hidden. Use the chips above to show some.' })); return; }
-        computeDups(vis);
-        const grid = h('div', { class: 'fs-grid fs-' + S.layout, style: `--fs-cols:${vis.length}` });
-        if (S.layout === 'rows') {
-            vis.forEach(sw => grid.append(headerEl(sw)));
-            const max = Math.max(...vis.map(s => blocksOf(s).length));
-            for (let r = 0; r < max; r++) {
-                vis.forEach(sw => {
-                    const b = blocksOf(sw)[r];
-                    grid.append(b ? blockEl(sw, b, r) : h('div', { class: 'fs-block fs-none' }));
-                });
-            }
+            s.similarity = count > 0 ? Math.round((sum / count) * 100) : 100;
         } else {
-            vis.forEach(sw => {
-                const col = h('div', { class: 'fs-col' }, [headerEl(sw)]);
-                blocksOf(sw).forEach((b, i) => col.append(blockEl(sw, b, i)));
-                grid.append(col);
-            });
+            s.similarity = Math.round(computeJaccardSimilarity(activeShingles, shingleSets[idx]) * 100);
         }
-        root.append(grid);
-        root.scrollTop = scroll;
-    }
+    });
 
-    function textOfChoice(v) { return v === 'draft' ? joinDraft() : S.swipes[+v].text; }
+    workspaceState = {
+        messageId: numericId,
+        characterName: msg.name || 'Character',
+        activeSwipeIndex,
+        swipes,
+        parsedSwipes: [],
+        hiddenSwipes: new Set(),
+        granularity: settings.defaultGranularity || 'paragraphs',
+        viewMode: settings.defaultView || 'rows',
+        dimDuplicates: Boolean(settings.dimDuplicates),
+        collapseDuplicates: Boolean(settings.collapseDuplicates),
+        diffLeftSource: String(activeSwipeIndex),
+        diffRightSource: String(activeSwipeIndex === 0 ? 1 : 0),
+        draftBlocks: [],
+        rawEditorMode: false,
+        rawText: '',
+        replaceTargetId: null,
+        reasoningMode: settings.defaultReasoning || 'primary_donor',
+        reasoningExpanded: false,
+        reasoningManuallyEdited: false,
+        customReasoningText: '',
+        undoStack: [],
+        redoStack: [],
+        dragSourceIndex: null,
+    };
 
-    function runsFrag(ops, side) {
-        const frag = document.createDocumentFragment();
-        let cur = null, curType = null;
-        const flush = () => { if (cur !== null) { frag.append(curType === 'eq' ? document.createTextNode(cur) : h('span', { class: curType === 'del' ? 'fs-del' : 'fs-ins', text: cur })); } cur = null; };
-        for (const op of ops) {
-            if (side === 'a' && op.t === 'ins') continue;
-            if (side === 'b' && op.t === 'del') continue;
-            const txt = side === 'a' ? op.a : op.b;
-            if (op.t !== curType) { flush(); curType = op.t; cur = ''; }
-            cur += txt;
-        }
-        flush();
-        return frag;
-    }
+    rebuildParsedSwipes(workspaceState);
 
-    function renderDiff(root) {
-        const opts = [...S.swipes.map(s => [String(s.idx), `Swipe #${s.idx + 1}` + (s.idx === S.mes.swipe_id ? ' (current)' : '')]), ['draft', 'Current draft']];
-        const ta = textOfChoice(S.diffA), tb = textOfChoice(S.diffB);
-        const ops = diffWords(ta, tb);
-        const removed = ops.filter(o => o.t === 'del' && !isWs(o.a)).length;
-        const added = ops.filter(o => o.t === 'ins' && !isWs(o.b)).length;
-        const sim = Math.round(jaccard(shingles(ta), shingles(tb)) * 100);
-        const bar = h('div', { class: 'fs-diffbar' }, [
-            'Compare ', sel(opts, S.diffA, v => { S.diffA = v; renderSource(); }),
-            ibtn('fa-right-left', 'Swap sides', () => { [S.diffA, S.diffB] = [S.diffB, S.diffA]; renderSource(); }),
-            ' with ', sel(opts, S.diffB, v => { S.diffB = v; renderSource(); }),
-            h('span', { class: 'fs-spacer' }),
-            h('span', { class: 'fs-muted', text: `${sim}% similar · ` }),
-            h('span', { class: 'fs-del', text: `−${removed}` }), ' ', h('span', { class: 'fs-ins', text: `+${added}` }),
-        ]);
-        const pane = (v, label, side) => h('div', { class: 'fs-diffcol', style: `--fs-c:${v === 'draft' ? 'var(--SmartThemeBorderColor,#888)' : color(+v)}`, dataset: { sw: v === 'draft' ? '' : v } }, [
-            h('div', { class: 'fs-colhead' }, [h('span', { class: 'fs-dot' }), h('b', { text: label }),
-                v !== 'draft' ? ibtn('fa-layer-group', 'Use this whole swipe as the base of the draft', () => useBase(+v)) : '']),
-            h('div', { class: 'fs-diffpane' }, [runsFrag(ops, side)]),
-        ]);
-        const label = v => v === 'draft' ? 'Current draft' : `Swipe #${+v + 1}`;
-        root.append(bar, h('div', { class: 'fs-diffgrid' }, [pane(S.diffA, label(S.diffA) + '  (removed = red)', 'a'), pane(S.diffB, label(S.diffB) + '  (added = green)', 'b')]),
-            h('div', { class: 'fs-muted fs-diffhint', text: 'Tip: highlight any words in either pane and press “Add selection” to grab them into your draft.' }));
-    }
-
-    /* ---------- draft panel ---------- */
-    function autosize(ta) { ta.style.height = 'auto'; ta.style.height = (ta.scrollHeight + 2) + 'px'; }
-
-    function cardEl(d, i) {
-        const srcs = d.srcs?.length ? d.srcs : (d.src != null ? [d.src] : []);
-        const c = srcs.length ? color(srcs[0]) : 'var(--SmartThemeBorderColor,#888)';
-        const ta = h('textarea', { class: 'fs-ta text_pole', rows: 1, spellcheck: 'true' });
-        ta.value = d.text;
-        ta.addEventListener('input', () => { d.text = ta.value; d.edited = true; S.dirty = true; autosize(ta); updateCounter(); });
-        ta.addEventListener('focus', () => { S.sel = d.id; card.classList.add('fs-sel'); els.draftBody.querySelectorAll('.fs-card.fs-sel').forEach(x => { if (x !== card) x.classList.remove('fs-sel'); }); });
-        const sepLabel = { ' ': '␣', '\n': '↵', '\n\n': '¶' };
-        const sepTitle = { ' ': 'Joins to next block with a space', '\n': 'Joins to next block with a line break', '\n\n': 'Followed by a paragraph break' };
-        const handle = h('span', { class: 'fs-handle', draggable: 'true', title: 'Drag to reorder' }, [icon('fa-grip-vertical')]);
-        const card = h('div', { class: 'fs-card' + (S.sel === d.id ? ' fs-sel' : ''), style: `--fs-c:${c}`, dataset: { id: d.id } }, [
-            h('div', { class: 'fs-cardbar' }, [
-                handle,
-                h('span', { class: 'fs-badge', style: `background:${c}`, text: srcs.length ? srcs.map(s => '#' + (s + 1)).join('+') : '✎ custom' }),
-                d.kind ? h('small', { class: 'fs-muted', text: d.kind }) : '',
-                d.edited ? h('small', { class: 'fs-muted', text: 'edited' }) : '',
-                h('span', { class: 'fs-spacer' }),
-                h('button', { type: 'button', class: 'fs-ibtn fs-sepbtn', title: (sepTitle[d.sep] || '') + ' (click to change)', onclick: () => {
-                    d.sep = d.sep === ' ' ? '\n' : d.sep === '\n' ? '\n\n' : ' '; S.dirty = true; renderDraft();
-                } }, [sepLabel[d.sep] || '¶']),
-                ibtn('fa-arrow-up', 'Move up', () => moveBlock(d.id, i - 1)),
-                ibtn('fa-arrow-down', 'Move down', () => moveBlock(d.id, i + 1)),
-                ibtn('fa-down-left-and-up-right-to-center', 'Merge with the next block', () => mergeNext(i)),
-                ibtn('fa-plus', 'Insert an empty custom block below', () => { const nb = addBlock({ text: '', sep: '\n\n' }, d.id); setTimeout(() => els.draftBody.querySelector(`[data-id="${nb.id}"] textarea`)?.focus(), 30); }),
-                ibtn('fa-trash-can', 'Remove block', () => removeBlock(d.id), 'fs-danger'),
-            ]),
-            ta,
-        ]);
-        handle.addEventListener('dragstart', e => { S.dragId = d.id; e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', d.id); try { e.dataTransfer.setDragImage(card, 10, 10); } catch { /* ignore */ } });
-        handle.addEventListener('dragend', () => { S.dragId = null; els.draftBody.querySelectorAll('.fs-dragover').forEach(x => x.classList.remove('fs-dragover')); });
-        card.addEventListener('dragover', e => { if (S.dragId) { e.preventDefault(); card.classList.add('fs-dragover'); } });
-        card.addEventListener('dragleave', () => card.classList.remove('fs-dragover'));
-        card.addEventListener('drop', e => { e.preventDefault(); card.classList.remove('fs-dragover'); if (S.dragId) moveBlock(S.dragId, i); S.dragId = null; });
-        requestAnimationFrame(() => autosize(ta));
-        return card;
-    }
-
-    function updateCounter() {
-        const t = joinDraft();
-        const vis = visibleSwipes();
-        const avg = vis.length ? Math.round(vis.reduce((a, s) => a + wordCount(s.text), 0) / vis.length) : 0;
-        els.counter.textContent = `${wordCount(t)} words · ${t.length} chars` + (avg ? ` · avg swipe ${avg}w` : '');
-        els.undoBtn.disabled = !S.undo.length;
-        els.rawBtn.classList.toggle('active', S.raw);
-        els.rawBtn.replaceChildren(icon(S.raw ? 'fa-table-cells-large' : 'fa-pen-to-square'), S.raw ? ' Block view' : ' Raw edit');
-    }
-
-    function renderDraft() {
-        const body = els.draftBody;
-        const scroll = body.scrollTop;
-        body.replaceChildren();
-        if (S.raw) {
-            const ta = h('textarea', { class: 'fs-raw text_pole', spellcheck: 'true' });
-            ta.value = S.rawText;
-            ta.addEventListener('input', () => { S.rawText = ta.value; S.dirty = true; updateCounter(); });
-            body.append(ta);
-        } else {
-            if (!S.draft.length) {
-                body.append(h('div', { class: 'fs-empty-msg' }, [
-                    h('div', { text: 'Your draft is empty.' }),
-                    h('div', { class: 'fs-muted', text: 'Click blocks on the left to add them, press the stack icon on a swipe header to start from a whole swipe, or highlight any text and use “Add selection”.' }),
-                ]));
-            }
-            S.draft.forEach((d, i) => body.append(cardEl(d, i)));
-            body.append(h('button', { type: 'button', class: 'fs-btn fs-addcustom', onclick: () => {
-                const nb = addBlock({ text: '', sep: '\n\n' }, S.draft.at(-1)?.id ?? null);
-                setTimeout(() => body.querySelector(`[data-id="${nb.id}"] textarea`)?.focus(), 30);
-            } }, [icon('fa-plus'), ' Custom snippet']));
-        }
-        body.scrollTop = scroll;
-        updateCounter();
-    }
-
-    function renderFoot() {
-        const f = els.foot; f.replaceChildren();
-        const labelled = (t, el) => h('label', { class: 'fs-lab' }, [h('span', { text: t }), el]);
-        const mode = sel([['new', 'Save as new swipe'], ['overwrite', 'Overwrite a swipe'], ['clean', 'Save & clean up…']], S.saveMode, v => { S.saveMode = v; renderFoot(); });
-        const row1 = h('div', { class: 'fs-footrow' }, [labelled('Save', mode)]);
-        if (S.saveMode === 'overwrite') {
-            row1.append(labelled('Target', sel(S.swipes.map(s => [String(s.idx), `Swipe #${s.idx + 1}` + (s.idx === S.mes.swipe_id ? ' (current)' : '')]), String(S.target), v => { S.target = +v; })));
-        }
-        const rsn = sel([['primary', 'Primary donor’s'], ['active', 'Active swipe’s'], ['combine', 'Combine donors’'], ['blank', 'Leave blank']], S.reasoningMode, v => { S.reasoningMode = v; renderFoot(); });
-        const row2 = h('div', { class: 'fs-footrow' }, [labelled('Reasoning', rsn)]);
-        if (S.reasoningMode === 'primary') {
-            const auto = primaryDonor();
-            const don = sel([['auto', `Auto (→ #${auto + 1})`], ...S.swipes.map(s => [String(s.idx), `Swipe #${s.idx + 1}`])], S.primary, v => { S.primary = v; renderFoot(); });
-            row2.append(labelled('Primary donor', don));
-        }
-        const save = h('button', { type: 'button', class: 'fs-btn fs-save menu_button', onclick: doSave }, [icon('fa-floppy-disk'), ' Save stitched swipe']);
-        const cancel = h('button', { type: 'button', class: 'fs-btn', onclick: () => closeWorkspace() }, 'Cancel');
-        f.append(row1, row2, h('div', { class: 'fs-footrow fs-footbtns' }, [cancel, save]));
-    }
-
-    /* ---------- freehand selection grabber ---------- */
-    function onSelectionChange() {
-        clearTimeout(selTimer);
-        selTimer = setTimeout(() => {
-            if (!overlay) return;
-            const sel = window.getSelection();
-            const hide = () => { els.selBtn.style.display = 'none'; pendingSel = null; };
-            if (!sel || sel.isCollapsed || sel.rangeCount === 0) return hide();
-            const txt = sel.toString().trim();
-            if (!txt) return hide();
-            const node = sel.anchorNode;
-            const host = (node?.nodeType === 3 ? node.parentElement : node)?.closest?.('.fs-block-text, .fs-diffpane');
-            if (!host || !els.source.contains(host)) return hide();
-            const swEl = host.closest('[data-sw]');
-            const src = swEl && swEl.dataset.sw !== '' ? +swEl.dataset.sw : null;
-            pendingSel = { text: txt, src };
-            const r = sel.getRangeAt(0).getBoundingClientRect();
-            const wr = els.selBtn.parentElement.getBoundingClientRect();
-            els.selBtn.style.display = 'inline-flex';
-            const bw = els.selBtn.offsetWidth || 120;
-            els.selBtn.style.left = Math.max(4, Math.min(r.left - wr.left, wr.width - bw - 8)) + 'px';
-            els.selBtn.style.top = Math.max(4, r.bottom - wr.top + 6) + 'px';
-        }, 120);
-    }
-
-    /* ===================================================================
-     * Saving
-     * =================================================================== */
-    function buildReasoning() {
-        const pick = (i) => {
-            const sw = S.swipes[i];
-            if (!sw || !sw.reasoning.trim()) return null;
-            return { reasoning: sw.reasoning, duration: sw.extra.reasoning_duration, type: sw.extra.reasoning_type };
-        };
-        switch (S.reasoningMode) {
-            case 'blank': return null;
-            case 'active': return pick(S.mes.swipe_id);
-            case 'primary': return pick(primaryDonor());
-            case 'combine': {
-                const ids = Object.keys(donorWeights()).map(Number).sort((a, b) => a - b);
-                const parts = ids.map(i => S.swipes[i].reasoning.trim()).filter(Boolean);
-                return parts.length ? { reasoning: parts.join('\n\n---\n\n'), type: 'manual' } : null;
-            }
-            default: return null;
-        }
-    }
-
-    function askCleanup() {
-        return new Promise(resolve => {
-            const used = new Set(Object.keys(donorWeights()).map(Number));
-            const rows = S.swipes.map(s => {
-                const cb = h('input', { type: 'checkbox' });
-                cb.checked = !used.has(s.idx);
-                const prev = s.text.replace(/\s+/g, ' ').slice(0, 90);
-                return { s, cb, el: h('label', { class: 'fs-cleanrow', style: `--fs-c:${color(s.idx)}` }, [
-                    cb, h('span', { class: 'fs-dot' }), h('b', { text: `#${s.idx + 1}` }),
-                    used.has(s.idx) ? h('span', { class: 'fs-badge', text: 'used' }) : h('span', { class: 'fs-badge fs-badge-off', text: 'unused' }),
-                    h('small', { class: 'fs-muted', text: prev + (s.text.length > 90 ? '…' : '') }),
-                ]) };
-            });
-            const done = (v) => { modal.remove(); resolve(v); };
-            const setAll = (fn) => rows.forEach(r => { r.cb.checked = fn(r.s); });
-            const modal = h('div', { class: 'fs-modal' }, [h('div', { class: 'fs-modalbox' }, [
-                h('h3', { text: 'Clean up donor swipes' }),
-                h('div', { class: 'fs-muted', text: 'Checked swipes will be permanently deleted after your stitched swipe is saved. By default only swipes that contributed nothing to the draft are selected.' }),
-                h('div', { class: 'fs-btnrow' }, [
-                    h('button', { type: 'button', class: 'fs-btn', onclick: () => setAll(s => !used.has(s.idx)) }, 'Select unused'),
-                    h('button', { type: 'button', class: 'fs-btn', onclick: () => setAll(() => true) }, 'Select all'),
-                    h('button', { type: 'button', class: 'fs-btn', onclick: () => setAll(() => false) }, 'Select none'),
-                ]),
-                h('div', { class: 'fs-cleanlist' }, rows.map(r => r.el)),
-                h('div', { class: 'fs-btnrow fs-end' }, [
-                    h('button', { type: 'button', class: 'fs-btn', onclick: () => done(null) }, 'Back'),
-                    h('button', { type: 'button', class: 'fs-btn menu_button fs-save', onclick: () => done(rows.filter(r => r.cb.checked).map(r => r.s.idx)) }, 'Save & delete selected'),
-                ]),
-            ])]);
-            els.selBtn.parentElement.append(modal);
-        });
-    }
-
-    async function doSave() {
-        if (!S) return;
-        const text = joinDraft().trim();
-        if (!text) return toastr.warning('The draft is empty.', NAME);
-        const c = getCtx();
-        const mes = c.chat[S.mesId];
-        if (mes !== S.mes || mes.swipes.length !== S.swipes.length) {
-            return toastr.error('The message changed while the workspace was open. Close and reopen Franken-Swipe.', NAME);
-        }
-        if (S.saveMode === 'overwrite' && getSettings().confirmOverwrite &&
-            !(await confirmDlg(`Overwrite swipe #${S.target + 1} with the stitched text?`))) return;
-        let remove = [];
-        if (S.saveMode === 'clean') {
-            const r = await askCleanup();
-            if (r === null) return;
-            remove = r;
-        }
-
-        // 1) make sure swipe_info exists & the active swipe's extra is synced back
-        mes.extra = mes.extra || {};
-        if (!Array.isArray(mes.swipe_info)) mes.swipe_info = [];
-        while (mes.swipe_info.length < mes.swipes.length) {
-            mes.swipe_info.push({ send_date: mes.send_date, gen_started: mes.gen_started, gen_finished: mes.gen_finished, extra: {} });
-        }
-        mes.swipe_info[mes.swipe_id].extra = structuredClone(mes.extra);
-
-        // 2) build the new extra (+ reasoning handling)
-        const baseIdx = S.saveMode === 'overwrite' ? S.target : mes.swipe_id;
-        const extra = structuredClone(mes.swipe_info[baseIdx]?.extra || {});
-        for (const k of ['token_count', 'display_text', 'gen_id', 'reasoning', 'reasoning_duration', 'reasoning_type']) delete extra[k];
-        const r = buildReasoning();
-        if (r) {
-            extra.reasoning = r.reasoning;
-            if (r.duration != null) extra.reasoning_duration = r.duration;
-            extra.reasoning_type = r.type || 'manual';
-        }
-
-        // 3) write the swipe
-        let newIdx;
-        const now = new Date().toISOString();
-        if (S.saveMode === 'overwrite') {
-            newIdx = S.target;
-            mes.swipes[newIdx] = text;
-            mes.swipe_info[newIdx] = { ...(mes.swipe_info[newIdx] || {}), extra };
-        } else {
-            mes.swipes.push(text);
-            mes.swipe_info.push({ send_date: now, gen_started: null, gen_finished: null, extra });
-            newIdx = mes.swipes.length - 1;
-        }
-        // 4) optional clean-up (never touches the stitched swipe)
-        for (const i of [...remove].sort((a, b) => b - a)) {
-            if (i === newIdx) continue;
-            mes.swipes.splice(i, 1); mes.swipe_info.splice(i, 1);
-            if (i < newIdx) newIdx--;
-        }
-        // 5) activate the stitched swipe
-        mes.swipe_id = newIdx;
-        mes.mes = mes.swipes[newIdx];
-        mes.extra = structuredClone(mes.swipe_info[newIdx].extra || {});
-
-        // 6) refresh UI + persist
-        try {
-            if (typeof c.updateMessageBlock === 'function') c.updateMessageBlock(S.mesId, mes);
-            else if (typeof c.reloadCurrentChat === 'function') await c.reloadCurrentChat();
-        } catch (e) { console.warn(`[${NAME}] updateMessageBlock failed`, e); }
-        const mesEl = document.querySelector(`#chat .mes[mesid="${S.mesId}"]`);
-        if (mesEl) {
-            const counter = mesEl.querySelector('.swipes-counter');
-            if (counter) counter.textContent = `${mes.swipe_id + 1}\u200b/\u200b${mes.swipes.length}`;
-            const left = mesEl.querySelector('.swipe_left');
-            if (left) left.style.display = 'flex';
-        }
-        await c.saveChat();
-        try {
-            const ev = c.eventTypes || c.event_types;
-            if (ev?.MESSAGE_UPDATED) await c.eventSource.emit(ev.MESSAGE_UPDATED, S.mesId);
-        } catch { /* ignore */ }
-
-        const msg = S.saveMode === 'overwrite' ? `Swipe #${newIdx + 1} overwritten.` :
-            (remove.length ? `Stitched swipe saved; ${remove.length} swipe(s) removed.` : 'Stitched swipe saved as a new swipe.');
-        toastr.success(msg, NAME);
-        closeWorkspace(true);
-        scheduleInject();
-    }
-
-    /* ===================================================================
-     * Triggers: buttons, slash command, hotkey
-     * =================================================================== */
-    function syncButton(host, cls, want, make) {
-        const existing = host.querySelector('.' + cls);
-        if (want && !existing) host.append(make());
-        else if (!want && existing) existing.remove();
-    }
-    function injectButtons() {
-        const c = getCtx();
-        const loc = getSettings().triggerLocation;
-        document.querySelectorAll('#chat .mes').forEach(el => {
-            const m = c.chat?.[+el.getAttribute('mesid')];
-            const ok = !!m && Array.isArray(m.swipes) && m.swipes.length >= 2;
-            const menu = el.querySelector('.extraMesButtons');
-            if (menu) syncButton(menu, 'fs-btn-menu', ok && (loc === 'menu' || loc === 'both'), () =>
-                h('div', { class: 'mes_button fs-open-btn fs-btn-menu fa-solid fa-puzzle-piece interactable', title: 'Franken-Swipe: stitch swipes together', tabindex: '0', role: 'button' }));
-            const sw = el.querySelector('.swipeRightBlock');
-            if (sw) syncButton(sw, 'fs-btn-swipe', ok && (loc === 'swipes' || loc === 'both'), () =>
-                h('div', { class: 'fs-open-btn fs-btn-swipe fa-solid fa-puzzle-piece interactable', title: 'Franken-Swipe: stitch swipes together', tabindex: '0', role: 'button' }));
-        });
-    }
-    let injectTimer = null;
-    function scheduleInject() { clearTimeout(injectTimer); injectTimer = setTimeout(injectButtons, 120); }
-
-    function comboFrom(e) {
-        if (['Control', 'Shift', 'Alt', 'Meta'].includes(e.key)) return null;
-        const parts = [];
-        if (e.ctrlKey || e.metaKey) parts.push('Ctrl');
-        if (e.altKey) parts.push('Alt');
-        if (e.shiftKey) parts.push('Shift');
-        let key = e.key;
-        if (/^Key[A-Z]$/.test(e.code)) key = e.code.slice(3);
-        else if (/^Digit\d$/.test(e.code)) key = e.code.slice(5);
-        else if (key.length === 1) key = key.toUpperCase();
-        else if (key === ' ') key = 'Space';
-        parts.push(key);
-        return parts.join('+');
-    }
-
-    function registerSlash() {
-        const c = getCtx();
-        const cb = async (_args, value) => {
-            const v = String(value ?? '').trim();
-            openLatest(v === '' ? null : parseInt(v, 10));
-            return '';
-        };
-        try {
-            c.SlashCommandParser.addCommandObject(c.SlashCommand.fromProps({
-                name: 'frankenswipe',
-                aliases: ['franken', 'fswipe'],
-                callback: cb,
-                helpString: 'Open the Franken-Swipe workspace on the latest message, or on the message id you pass. Example: <code>/frankenswipe 12</code>',
-                unnamedArgumentList: [c.SlashCommandArgument.fromProps({
-                    description: 'message id (optional, defaults to the latest message)',
-                    typeList: c.ARGUMENT_TYPE ? [c.ARGUMENT_TYPE.NUMBER] : [],
-                    isRequired: false,
-                })],
-                returns: 'nothing',
+    if (settings.autoBaseActive) {
+        const baseSwipe = workspaceState.parsedSwipes[activeSwipeIndex];
+        if (baseSwipe) {
+            workspaceState.draftBlocks = baseSwipe.blocks.map(blk => ({
+                id: nextBlockId(),
+                swipeIndex: blk.swipeIndex,
+                sourceBlockIndex: blk.blockIndex,
+                text: blk.text,
+                kind: blk.kind,
+                joinAfter: blk.joinAfter || '\n\n',
+                edited: false,
+                norm: blk.norm,
             }));
-        } catch (e) {
-            console.warn(`[${NAME}] new slash API failed, trying legacy`, e);
-            try { c.registerSlashCommand?.('frankenswipe', cb, ['franken', 'fswipe'], 'Open Franken-Swipe on the latest message', true, true); } catch { /* ignore */ }
+            workspaceState.rawText = assembleDraftText(workspaceState);
         }
     }
 
-    /* ===================================================================
-     * Settings panel
-     * =================================================================== */
-    function settingsHtml() {
-        const opt = (v, l) => `<option value="${v}">${l}</option>`;
+    workspaceState.customReasoningText = computeResolvedReasoning(workspaceState);
+
+    mountWorkspaceModal();
+    renderWorkspace();
+}
+
+export function openOnLatestMultiSwipeMessage() {
+    const { chat } = getContext();
+    if (!Array.isArray(chat) || chat.length === 0) {
+        notify('warning', 'No active chat loaded.');
+        return;
+    }
+
+    for (let i = chat.length - 1; i >= 0; i--) {
+        if (Array.isArray(chat[i]?.swipes) && chat[i].swipes.length >= 2) {
+            openFrankenSwipeWorkspace(i);
+            return;
+        }
+    }
+
+    notify('info', 'No message with 2 or more swipes found in the current chat.');
+}
+
+/* ==========================================================================
+   Workspace DOM Rendering
+   ========================================================================== */
+
+function mountWorkspaceModal() {
+    // Remove any existing backdrop DOM element without clearing workspaceState
+    document.getElementById('fs_modal_backdrop')?.remove();
+
+    const backdrop = document.createElement('div');
+    backdrop.id = 'fs_modal_backdrop';
+    backdrop.className = 'fs-modal-backdrop';
+    backdrop.addEventListener('mousedown', (e) => {
+        if (e.target === backdrop) {
+            closeWorkspaceModal();
+        }
+    });
+
+    const workspace = document.createElement('div');
+    workspace.id = 'fs_workspace';
+    workspace.className = 'fs-workspace';
+    backdrop.appendChild(workspace);
+
+    document.body.appendChild(backdrop);
+    document.addEventListener('selectionchange', handleFreehandSelectionChange);
+}
+
+function closeWorkspaceModal() {
+    removeSelectionPopover();
+    document.removeEventListener('selectionchange', handleFreehandSelectionChange);
+    const existing = document.getElementById('fs_modal_backdrop');
+    if (existing) {
+        existing.remove();
+    }
+    workspaceState = null;
+}
+
+function getDonorColorClass(swipeIndex) {
+    if (typeof swipeIndex !== 'number' || swipeIndex < 0) return 'fs-donor-color-0';
+    return `fs-donor-color-${swipeIndex % 8}`;
+}
+
+function renderSwipeHeaderCard(sw, isActive) {
+    const colorClass = getDonorColorClass(sw.swipeIndex);
+    const wordCount = countStats(sw.bodyText).words;
+    const hasReasoning = Boolean(sw.reasoning);
+
+    return `
+        <div class="fs-swipe-header-card ${colorClass}" data-swipe-index="${sw.swipeIndex}">
+            <div class="fs-swipe-header-top">
+                <span class="fs-swipe-title">
+                    <span>Swipe #${sw.swipeIndex + 1}</span>
+                    ${isActive ? '<span class="fs-active-badge">Active</span>' : ''}
+                    ${hasReasoning ? '<i class="fa-solid fa-brain" title="Contains reasoning/thought block"></i>' : ''}
+                </span>
+                <div class="fs-draft-block-actions">
+                    <button type="button" class="fs-mini-btn accent fs-use-base-btn" data-swipe-index="${sw.swipeIndex}" title="Populate Draft Builder with all blocks from Swipe #${sw.swipeIndex + 1}">
+                        <i class="fa-solid fa-layer-group"></i> Use as Base
+                    </button>
+                    <button type="button" class="fs-icon-btn fs-hide-swipe-btn" data-swipe-index="${sw.swipeIndex}" title="Hide Swipe #${sw.swipeIndex + 1}">
+                        <i class="fa-solid fa-eye-slash"></i>
+                    </button>
+                </div>
+            </div>
+            <div class="fs-swipe-meta">
+                <span>${wordCount} words &bull; ${sw.blocks.length} blocks</span>
+                <span class="fs-sim-bar-wrap" title="${sw.similarity}% word-pair similarity to active swipe">
+                    <span>${sw.similarity}% sim</span>
+                    <span class="fs-sim-bar"><span class="fs-sim-bar-fill" style="width: ${sw.similarity}%;"></span></span>
+                </span>
+            </div>
+        </div>
+    `;
+}
+
+function renderDonorBlockCard(blk, state, draftNormSet) {
+    const colorClass = getDonorColorClass(blk.swipeIndex);
+    const inDraft = (blk.norm && draftNormSet.has(`${blk.swipeIndex}:${blk.blockIndex}`)) || draftNormSet.has(`norm:${blk.norm}`);
+    const isDup = blk.duplicateOf !== null && blk.duplicateOf !== undefined;
+    const dupClasses = isDup
+        ? `is-duplicate ${state.dimDuplicates ? 'dimmed' : ''} ${state.collapseDuplicates ? 'collapsed' : ''}`
+        : '';
+
+    let kindBadge = '';
+    if (blk.kind === 'dialogue') {
+        kindBadge = '<span class="fs-tag-badge dialogue"><i class="fa-solid fa-comment-dots"></i> Dialogue</span>';
+    } else if (blk.kind === 'narration') {
+        kindBadge = '<span class="fs-tag-badge narration"><i class="fa-solid fa-book-open"></i> Narration</span>';
+    }
+
+    const dupBadge = isDup
+        ? `<span class="fs-tag-badge dup-badge" title="Identical to a block in Swipe #${blk.duplicateOf + 1}">= Swipe #${blk.duplicateOf + 1}</span>`
+        : '';
+
+    const actionHintText = state.replaceTargetId
+        ? '<i class="fa-solid fa-arrows-rotate"></i> Click to Replace Target'
+        : '<i class="fa-solid fa-plus"></i> Click to Add';
+
+    return `
+        <div class="fs-block-card ${colorClass} ${inDraft ? 'in-draft' : ''} ${dupClasses}"
+             data-swipe-index="${blk.swipeIndex}"
+             data-block-index="${blk.blockIndex}">
+            <div class="fs-block-top">
+                <div class="fs-block-badges">
+                    <span>#${blk.blockIndex + 1}</span>
+                    ${kindBadge}
+                    ${dupBadge}
+                    ${inDraft ? '<span class="fs-tag-badge" style="color:#68d391;"><i class="fa-solid fa-check"></i> In Draft</span>' : ''}
+                </div>
+                <span class="fs-block-action-hint">${actionHintText}</span>
+            </div>
+            <div class="fs-block-text" data-swipe-index="${blk.swipeIndex}" data-block-index="${blk.blockIndex}">${escapeHtml(blk.text)}</div>
+        </div>
+    `;
+}
+
+function renderAlignedRowsView(state, visibleSwipes, draftNormSet) {
+    if (visibleSwipes.length === 0) {
+        return `<div class="fs-draft-empty"><p>All swipes are currently hidden. Click a swipe pill above to show it.</p></div>`;
+    }
+
+    const maxBlocks = Math.max(1, ...visibleSwipes.map(s => s.blocks.length));
+    const colTemplate = `42px repeat(${visibleSwipes.length}, minmax(260px, 1fr))`;
+    const minGridWidth = 52 + visibleSwipes.length * 270;
+
+    const headerCells = visibleSwipes
+        .map(sw => renderSwipeHeaderCard(sw, sw.swipeIndex === state.activeSwipeIndex))
+        .join('');
+
+    let rowsHtml = '';
+    for (let bIdx = 0; bIdx < maxBlocks; bIdx++) {
+        const cells = visibleSwipes.map(sw => {
+            const blk = sw.blocks[bIdx];
+            if (!blk) {
+                return `<div class="fs-empty-slot">&mdash;</div>`;
+            }
+            return renderDonorBlockCard(blk, state, draftNormSet);
+        }).join('');
+
+        rowsHtml += `
+            <div class="fs-aligned-block-row" style="grid-template-columns: ${colTemplate};">
+                <div class="fs-row-index-gutter" title="Block Row #${bIdx + 1}">B${bIdx + 1}</div>
+                ${cells}
+            </div>
+        `;
+    }
+
+    return `
+        <div class="fs-aligned-grid" style="min-width: ${minGridWidth}px;">
+            <div class="fs-aligned-header-row" style="grid-template-columns: ${colTemplate};">
+                <div class="fs-row-index-gutter"><i class="fa-solid fa-grip-lines"></i></div>
+                ${headerCells}
+            </div>
+            ${rowsHtml}
+        </div>
+    `;
+}
+
+function renderColumnsView(state, visibleSwipes, draftNormSet) {
+    if (visibleSwipes.length === 0) {
+        return `<div class="fs-draft-empty"><p>All swipes are currently hidden. Click a swipe pill above to show it.</p></div>`;
+    }
+
+    const minGridWidth = visibleSwipes.length * 280;
+    const colsHtml = visibleSwipes.map(sw => {
+        const blocksHtml = sw.blocks.length > 0
+            ? sw.blocks.map(blk => renderDonorBlockCard(blk, state, draftNormSet)).join('')
+            : `<div class="fs-empty-slot">Empty swipe</div>`;
+
         return `
-<div class="franken-swipe-settings">
-  <div class="inline-drawer">
-    <div class="inline-drawer-toggle inline-drawer-header">
-      <b>🧟 Franken-Swipe</b>
-      <div class="inline-drawer-icon fa-solid fa-circle-chevron-down down"></div>
-    </div>
-    <div class="inline-drawer-content">
-      <div class="fs-set">
-        <label>Trigger button location
-          <select class="text_pole" data-fs="triggerLocation">
-            ${opt('menu', 'Message action menu (•••)')}${opt('swipes', 'Next to swipe controls (last message)')}${opt('both', 'Both')}${opt('none', 'Hidden (slash command / hotkey only)')}
-          </select></label>
-        <label>Default split granularity
-          <select class="text_pole" data-fs="granularity">
-            ${opt('paragraphs', 'Paragraphs')}${opt('lines', 'Lines')}${opt('sentences', 'Sentences')}${opt('dialogue', 'Dialogue / narration')}${opt('freehand', 'Freehand (select text)')}
-          </select></label>
-        <label>Default layout
-          <select class="text_pole" data-fs="layout">${opt('rows', 'Aligned rows')}${opt('columns', 'Columns')}${opt('diff', 'Visual diff')}</select></label>
-        <label>Identical blocks
-          <select class="text_pole" data-fs="dupMode">${opt('dim', 'Dim by default')}${opt('collapse', 'Collapse by default')}${opt('off', 'Show normally')}</select></label>
-        <label>Default save behavior
-          <select class="text_pole" data-fs="saveMode">${opt('new', 'Save as new swipe')}${opt('overwrite', 'Overwrite a swipe')}${opt('clean', 'Save & clean up donors')}</select></label>
-        <label>Default reasoning handling
-          <select class="text_pole" data-fs="reasoningMode">${opt('primary', 'Keep primary donor’s reasoning')}${opt('active', 'Keep active swipe’s reasoning')}${opt('combine', 'Combine donors’ reasoning')}${opt('blank', 'Leave blank')}</select></label>
-        <label class="checkbox_label"><input type="checkbox" data-fs="confirmOverwrite"><span>Ask before overwriting a swipe</span></label>
-        <label class="checkbox_label"><input type="checkbox" data-fs="hotkeyEnabled"><span>Enable keyboard shortcut (opens the latest message)</span></label>
-        <label>Shortcut <small>(click the box, then press the combo)</small>
-          <div class="fs-hkrow"><input type="text" class="text_pole" id="fs_hotkey" readonly><button type="button" class="menu_button" id="fs_hotkey_reset">Reset</button></div></label>
-        <small class="fs-muted">Slash command: <code>/frankenswipe</code> (aliases <code>/franken</code>, <code>/fswipe</code>) — optionally followed by a message id.</small>
-      </div>
-    </div>
-  </div>
-</div>`;
+            <div class="fs-swipe-column">
+                ${renderSwipeHeaderCard(sw, sw.swipeIndex === state.activeSwipeIndex)}
+                ${blocksHtml}
+            </div>
+        `;
+    }).join('');
+
+    return `
+        <div class="fs-columns-container" style="grid-template-columns: repeat(${visibleSwipes.length}, minmax(260px, 1fr)); min-width: ${minGridWidth}px;">
+            ${colsHtml}
+        </div>
+    `;
+}
+
+function getDiffSourceBlocks(state, sourceKey) {
+    if (sourceKey === 'draft') {
+        const draftText = assembleDraftText(state);
+        const blocks = splitSwipeText(draftText, state.granularity);
+        return blocks.map(b => ({ ...b, swipeIndex: -1 }));
+    }
+    const idx = Number(sourceKey);
+    return state.parsedSwipes[idx]?.blocks || [];
+}
+
+function renderVisualDiffView(state, draftNormSet) {
+    const optionsHtml = (selectedVal) => {
+        const swipeOpts = state.swipes.map(s => {
+            const sel = String(s.swipeIndex) === String(selectedVal) ? 'selected' : '';
+            return `<option value="${s.swipeIndex}" ${sel}>Swipe #${s.swipeIndex + 1}${s.swipeIndex === state.activeSwipeIndex ? ' (Active)' : ''}</option>`;
+        }).join('');
+        const draftSel = selectedVal === 'draft' ? 'selected' : '';
+        return `${swipeOpts}<option value="draft" ${draftSel}>Stitched Draft (Current)</option>`;
+    };
+
+    const leftBlocks = getDiffSourceBlocks(state, state.diffLeftSource);
+    const rightBlocks = getDiffSourceBlocks(state, state.diffRightSource);
+    const maxLen = Math.max(leftBlocks.length, rightBlocks.length, 1);
+
+    let rowsHtml = '';
+    for (let i = 0; i < maxLen; i++) {
+        const lBlk = leftBlocks[i];
+        const rBlk = rightBlocks[i];
+        const { leftHtml, rightHtml } = computeWordDiffHtml(lBlk?.text || '', rBlk?.text || '');
+
+        const leftCard = lBlk ? `
+            <div class="fs-block-card ${getDonorColorClass(lBlk.swipeIndex)} ${draftNormSet.has(`norm:${lBlk.norm}`) ? 'in-draft' : ''}"
+                 data-diff-side="left" data-diff-index="${i}">
+                <div class="fs-block-top">
+                    <span>#${i + 1} (${state.diffLeftSource === 'draft' ? 'Draft' : `Swipe #${Number(state.diffLeftSource) + 1}`})</span>
+                    <span class="fs-block-action-hint"><i class="fa-solid fa-plus"></i> Add to Draft</span>
+                </div>
+                <div class="fs-block-text">${leftHtml}</div>
+            </div>
+        ` : `<div class="fs-empty-slot">No corresponding block</div>`;
+
+        const rightCard = rBlk ? `
+            <div class="fs-block-card ${getDonorColorClass(rBlk.swipeIndex)} ${draftNormSet.has(`norm:${rBlk.norm}`) ? 'in-draft' : ''}"
+                 data-diff-side="right" data-diff-index="${i}">
+                <div class="fs-block-top">
+                    <span>#${i + 1} (${state.diffRightSource === 'draft' ? 'Draft' : `Swipe #${Number(state.diffRightSource) + 1}`})</span>
+                    <span class="fs-block-action-hint"><i class="fa-solid fa-plus"></i> Add to Draft</span>
+                </div>
+                <div class="fs-block-text">${rightHtml}</div>
+            </div>
+        ` : `<div class="fs-empty-slot">No corresponding block</div>`;
+
+        rowsHtml += `<div class="fs-diff-row">${leftCard}${rightCard}</div>`;
     }
 
-    function initSettings() {
-        const st = getSettings();
-        const wrap = document.createElement('div');
-        wrap.innerHTML = settingsHtml();
-        (document.getElementById('extensions_settings2') || document.getElementById('extensions_settings')).append(wrap);
-        wrap.querySelectorAll('[data-fs]').forEach(el => {
-            const k = el.dataset.fs;
-            if (el.type === 'checkbox') el.checked = !!st[k]; else el.value = st[k];
-            el.addEventListener('change', () => {
-                st[k] = el.type === 'checkbox' ? el.checked : el.value;
-                persist();
-                if (k === 'triggerLocation') injectButtons();
-            });
-        });
-        const hk = wrap.querySelector('#fs_hotkey');
-        hk.value = st.hotkey;
-        hk.addEventListener('keydown', e => {
-            e.preventDefault(); e.stopPropagation();
-            const combo = comboFrom(e);
-            if (!combo) return;
-            if (!(e.ctrlKey || e.metaKey || e.altKey)) return toastr.info('Include Ctrl or Alt in the shortcut.', NAME);
-            st.hotkey = combo; hk.value = combo; persist();
-        });
-        wrap.querySelector('#fs_hotkey_reset').addEventListener('click', () => { st.hotkey = DEFAULTS.hotkey; hk.value = st.hotkey; persist(); });
+    return `
+        <div class="fs-diff-container">
+            <div class="fs-diff-toolbar">
+                <div class="fs-diff-selectors">
+                    <label>Compare Base (A):</label>
+                    <select id="fs_diff_left_select">${optionsHtml(state.diffLeftSource)}</select>
+                    <button type="button" id="fs_diff_swap_btn" class="fs-mini-btn" title="Swap Left & Right"><i class="fa-solid fa-right-left"></i></button>
+                    <label>Against Target (B):</label>
+                    <select id="fs_diff_right_select">${optionsHtml(state.diffRightSource)}</select>
+                </div>
+                <div class="fs-diff-legend">
+                    <span><del class="fs-diff-del">Removed in B</del></span>
+                    <span><ins class="fs-diff-ins">Added in B</ins></span>
+                </div>
+            </div>
+            ${rowsHtml}
+        </div>
+    `;
+}
+
+function formatJoinerLabel(joinAfter) {
+    if (joinAfter === ' ') return '␣ Space';
+    if (joinAfter === '\n') return '↵ Line Break';
+    return '¶ Paragraph Break';
+}
+
+function renderDraftBuilderPane(state) {
+    const baseOptions = state.swipes.map(s => (
+        `<option value="${s.swipeIndex}">Load Swipe #${s.swipeIndex + 1} as Base${s.swipeIndex === state.activeSwipeIndex ? ' (Active)' : ''}</option>`
+    )).join('');
+
+    const replaceBanner = state.replaceTargetId ? `
+        <div class="fs-replace-banner">
+            <span><i class="fa-solid fa-crosshairs"></i> <b>Replace Mode Active:</b> Click any donor block on the left to swap it into the highlighted slot.</span>
+            <button type="button" id="fs_cancel_replace_btn" class="fs-mini-btn">Cancel</button>
+        </div>
+    ` : '';
+
+    let bodyContent = '';
+    if (state.rawEditorMode) {
+        bodyContent = `
+            <textarea id="fs_raw_editor" class="fs-raw-editor-textarea" placeholder="Write or edit your full stitched response here...">${escapeHtml(state.rawText)}</textarea>
+        `;
+    } else if (state.draftBlocks.length === 0) {
+        bodyContent = `
+            <div class="fs-draft-empty">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+                <div><b>Your Stitched Draft is Empty</b></div>
+                <div>Click any block from the donor swipes on the left to add it here, highlight any arbitrary phrase to grab a selection, or load a full swipe as a starting base.</div>
+                <button type="button" id="fs_empty_load_active_btn" class="fs-mini-btn accent">
+                    <i class="fa-solid fa-layer-group"></i> Use Active Swipe (#${state.activeSwipeIndex + 1}) as Base
+                </button>
+            </div>
+        `;
+    } else {
+        bodyContent = state.draftBlocks.map((blk, idx) => {
+            const colorClass = getDonorColorClass(blk.swipeIndex);
+            const isTarget = state.replaceTargetId === blk.id;
+            const donorTitle = blk.customLabel
+                ? blk.customLabel
+                : (blk.swipeIndex >= 0 ? `Swipe #${blk.swipeIndex + 1}` : 'Custom Block');
+            const editedTag = blk.edited ? ' &bull; Edited' : '';
+
+            const joinerBar = idx < state.draftBlocks.length - 1 ? `
+                <div class="fs-joiner-bar">
+                    <button type="button" class="fs-joiner-pill fs-cycle-joiner-btn" data-index="${idx}" title="Click to toggle how Block #${idx + 1} connects to Block #${idx + 2}">
+                        ${formatJoinerLabel(blk.joinAfter)}
+                    </button>
+                    <button type="button" class="fs-joiner-pill fs-merge-down-btn" data-index="${idx}" title="Merge Block #${idx + 1} and Block #${idx + 2} into one block">
+                        <i class="fa-solid fa-link"></i> Merge Down
+                    </button>
+                </div>
+            ` : '';
+
+            return `
+                <div class="fs-draft-block ${colorClass} ${isTarget ? 'replace-target' : ''}"
+                     draggable="true"
+                     data-draft-id="${blk.id}"
+                     data-draft-index="${idx}">
+                    <div class="fs-draft-block-header">
+                        <span class="fs-donor-pill">
+                            <i class="fa-solid fa-grip-vertical" style="cursor:grab;"></i>
+                            <span>#${idx + 1} &bull; ${escapeHtml(donorTitle)}${editedTag}</span>
+                        </span>
+                        <div class="fs-draft-block-actions">
+                            <button type="button" class="fs-icon-btn fs-target-replace-btn ${isTarget ? 'active' : ''}" data-draft-id="${blk.id}" title="Target this block to replace it with the next donor block you click">
+                                <i class="fa-solid fa-arrows-rotate"></i>
+                            </button>
+                            <button type="button" class="fs-icon-btn fs-move-up-btn" data-index="${idx}" ${idx === 0 ? 'disabled' : ''} title="Move Block Up">
+                                <i class="fa-solid fa-arrow-up"></i>
+                            </button>
+                            <button type="button" class="fs-icon-btn fs-move-down-btn" data-index="${idx}" ${idx === state.draftBlocks.length - 1 ? 'disabled' : ''} title="Move Block Down">
+                                <i class="fa-solid fa-arrow-down"></i>
+                            </button>
+                            <button type="button" class="fs-icon-btn fs-split-block-btn" data-index="${idx}" title="Split this block into sentences/lines">
+                                <i class="fa-solid fa-scissors"></i>
+                            </button>
+                            <button type="button" class="fs-icon-btn danger fs-delete-block-btn" data-index="${idx}" title="Remove Block">
+                                <i class="fa-solid fa-trash-can"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <textarea class="fs-draft-editor-input" data-index="${idx}" rows="${Math.min(8, Math.max(2, Math.ceil(blk.text.length / 72)))}">${escapeHtml(blk.text)}</textarea>
+                </div>
+                ${joinerBar}
+            `;
+        }).join('');
     }
 
-    /* ===================================================================
-     * Init
-     * =================================================================== */
-    function init() {
-        const c = getCtx();
-        getSettings();
-        initSettings();
-        registerSlash();
+    const specificSwipeReasoningOpts = state.swipes.map(s => {
+        const val = `swipe_${s.swipeIndex}`;
+        const sel = state.reasoningMode === val ? 'selected' : '';
+        return `<option value="${val}" ${sel}>Keep Swipe #${s.swipeIndex + 1} Reasoning${s.reasoning ? '' : ' (Empty)'}</option>`;
+    }).join('');
 
-        document.addEventListener('click', e => {
-            const b = e.target.closest?.('.fs-open-btn');
-            if (!b) return;
-            e.preventDefault(); e.stopPropagation();
-            const mes = b.closest('.mes');
-            if (mes) openWorkspace(+mes.getAttribute('mesid'));
-        });
-        document.addEventListener('keydown', e => {
-            if (e.key === 'Enter' && e.target.classList?.contains('fs-open-btn')) { e.target.click(); return; }
-            if (e.key === 'Escape' && overlay && !document.querySelector('dialog[open]')) { e.stopPropagation(); closeWorkspace(); return; }
-            const st = getSettings();
-            if (!st.hotkeyEnabled || overlay) return;
-            if (comboFrom(e) === st.hotkey) { e.preventDefault(); openLatest(); }
-        }, true);
+    return `
+        <div class="fs-draft-header">
+            <div class="fs-draft-title-row">
+                <span class="fs-draft-title">
+                    <i class="fa-solid fa-puzzle-piece"></i>
+                    <span>Stitching Workspace (Draft Builder)</span>
+                </span>
+                <div class="fs-draft-block-actions">
+                    <button type="button" id="fs_undo_btn" class="fs-mini-btn" ${state.undoStack.length === 0 ? 'disabled' : ''} title="Undo (Ctrl+Z)">
+                        <i class="fa-solid fa-rotate-left"></i>
+                    </button>
+                    <button type="button" id="fs_redo_btn" class="fs-mini-btn" ${state.redoStack.length === 0 ? 'disabled' : ''} title="Redo (Ctrl+Y)">
+                        <i class="fa-solid fa-rotate-right"></i>
+                    </button>
+                    <button type="button" id="fs_toggle_raw_btn" class="fs-mini-btn ${state.rawEditorMode ? 'accent' : ''}" title="Switch between structured blocks and full raw text editor">
+                        <i class="fa-solid ${state.rawEditorMode ? 'fa-cubes' : 'fa-pen-to-square'}"></i>
+                        <span>${state.rawEditorMode ? 'Block Editor' : 'Raw Text Editor'}</span>
+                    </button>
+                </div>
+            </div>
+            <div class="fs-draft-controls-row">
+                <select id="fs_load_base_select" class="fs-base-select">
+                    <option value="">+ Populate Draft from Swipe...</option>
+                    ${baseOptions}
+                </select>
+                <div class="fs-draft-block-actions">
+                    <button type="button" id="fs_add_custom_block_btn" class="fs-mini-btn" title="Add a blank custom block to write your own transition">
+                        <i class="fa-solid fa-plus"></i> Custom Block
+                    </button>
+                    <button type="button" id="fs_clear_draft_btn" class="fs-mini-btn" ${state.draftBlocks.length === 0 && !state.rawText ? 'disabled' : ''} title="Clear entire draft">
+                        <i class="fa-solid fa-eraser"></i> Clear
+                    </button>
+                </div>
+            </div>
+        </div>
+        ${replaceBanner}
+        <div class="fs-draft-body" id="fs_draft_body">
+            ${bodyContent}
+        </div>
+        <div class="fs-reasoning-panel">
+            <div class="fs-reasoning-row">
+                <span class="fs-reasoning-label">
+                    <i class="fa-solid fa-brain"></i>
+                    <span>Reasoning / Thought Block:</span>
+                </span>
+                <select id="fs_reasoning_mode_select" class="fs-reasoning-select">
+                    <option value="primary_donor" ${state.reasoningMode === 'primary_donor' ? 'selected' : ''}>Primary Donor Swipe (#${getPrimaryDonorIndex(state) + 1})</option>
+                    <option value="active_swipe" ${state.reasoningMode === 'active_swipe' ? 'selected' : ''}>Active Swipe (#${state.activeSwipeIndex + 1})</option>
+                    <option value="combine" ${state.reasoningMode === 'combine' ? 'selected' : ''}>Combine Used Donors</option>
+                    <option value="none" ${state.reasoningMode === 'none' ? 'selected' : ''}>Leave Blank (None)</option>
+                    ${specificSwipeReasoningOpts}
+                </select>
+                <button type="button" id="fs_toggle_reasoning_preview_btn" class="fs-mini-btn">
+                    <i class="fa-solid ${state.reasoningExpanded ? 'fa-chevron-down' : 'fa-chevron-up'}"></i>
+                    <span>${state.reasoningExpanded ? 'Hide' : 'Inspect / Edit'}</span>
+                </button>
+            </div>
+            ${state.reasoningExpanded ? `
+                <textarea id="fs_reasoning_textarea" class="fs-reasoning-preview" placeholder="No reasoning text for this selection (or type custom reasoning here)...">${escapeHtml(state.customReasoningText)}</textarea>
+            ` : ''}
+        </div>
+    `;
+}
 
-        const chat = document.getElementById('chat');
-        if (chat) new MutationObserver(scheduleInject).observe(chat, { childList: true, subtree: true });
-        const ev = c.eventTypes || c.event_types || {};
-        for (const name of ['CHAT_CHANGED', 'MESSAGE_SWIPED', 'MESSAGE_RECEIVED', 'MESSAGE_DELETED']) {
-            if (ev[name]) c.eventSource.on(ev[name], scheduleInject);
+function renderWorkspace() {
+    if (!workspaceState) return;
+    const state = workspaceState;
+    const container = document.getElementById('fs_workspace');
+    if (!container) return;
+
+    try {
+        const draftNormSet = new Set();
+        for (const blk of state.draftBlocks) {
+            if (typeof blk.swipeIndex === 'number' && typeof blk.sourceBlockIndex === 'number') {
+                draftNormSet.add(`${blk.swipeIndex}:${blk.sourceBlockIndex}`);
+            }
+            if (blk.norm) {
+                draftNormSet.add(`norm:${blk.norm}`);
+            }
         }
-        scheduleInject();
-        console.log(`[${NAME}] loaded`);
+
+        const visibleSwipes = state.parsedSwipes.filter(s => !state.hiddenSwipes.has(s.swipeIndex));
+
+        let comparisonHtml = '';
+        if (state.viewMode === 'rows') {
+            comparisonHtml = renderAlignedRowsView(state, visibleSwipes, draftNormSet);
+        } else if (state.viewMode === 'columns') {
+            comparisonHtml = renderColumnsView(state, visibleSwipes, draftNormSet);
+        } else {
+            comparisonHtml = renderVisualDiffView(state, draftNormSet);
+        }
+
+        const swipePillsHtml = state.parsedSwipes.map(sw => {
+            const isHidden = state.hiddenSwipes.has(sw.swipeIndex);
+            const colorVar = `var(--fs-donor-${sw.swipeIndex % 8})`;
+            return `
+                <div class="fs-swipe-pill ${isHidden ? 'hidden-swipe' : ''}" data-swipe-index="${sw.swipeIndex}" title="Click to toggle visibility of Swipe #${sw.swipeIndex + 1}">
+                    <span class="fs-color-dot" style="background:${colorVar};"></span>
+                    <span>Swipe #${sw.swipeIndex + 1}${sw.swipeIndex === state.activeSwipeIndex ? ' ★' : ''}</span>
+                    <span class="fs-sim-tag">${sw.similarity}%</span>
+                </div>
+            `;
+        }).join('');
+
+        const assembledText = assembleDraftText(state);
+        const draftStats = countStats(assembledText);
+        const activeStats = countStats(state.swipes[state.activeSwipeIndex]?.bodyText || '');
+        const wordDelta = draftStats.words - activeStats.words;
+        const deltaFormatted = wordDelta >= 0 ? `+${wordDelta}` : `${wordDelta}`;
+        const isDraftEmpty = draftStats.chars === 0;
+        const defaultSave = getSettings().defaultSaveMode || 'new_swipe';
+
+        container.innerHTML = `
+            <div class="fs-header">
+                <div class="fs-brand">
+                    <div class="fs-brand-icon"><i class="fa-solid fa-dna"></i></div>
+                    <div>
+                        <div class="fs-brand-title">Franken-Swipe</div>
+                        <div class="fs-brand-subtitle">Message #${state.messageId} &bull; ${escapeHtml(state.characterName)} &bull; ${state.swipes.length} Swipes</div>
+                    </div>
+                </div>
+
+                <div class="fs-toolbar">
+                    <div class="fs-control-group" title="Change how donor swipes are split into selectable blocks">
+                        <span class="fs-control-label">Split</span>
+                        <button type="button" class="fs-seg-btn ${state.granularity === 'paragraphs' ? 'active' : ''}" data-granularity="paragraphs">
+                            <i class="fa-solid fa-paragraph"></i> Paragraphs
+                        </button>
+                        <button type="button" class="fs-seg-btn ${state.granularity === 'lines' ? 'active' : ''}" data-granularity="lines">
+                            <i class="fa-solid fa-bars-staggered"></i> Lines
+                        </button>
+                        <button type="button" class="fs-seg-btn ${state.granularity === 'sentences' ? 'active' : ''}" data-granularity="sentences">
+                            <i class="fa-solid fa-ellipsis"></i> Sentences
+                        </button>
+                        <button type="button" class="fs-seg-btn ${state.granularity === 'dialogue' ? 'active' : ''}" data-granularity="dialogue">
+                            <i class="fa-solid fa-comments"></i> Dialogue
+                        </button>
+                    </div>
+
+                    <div class="fs-control-group" title="Switch comparison layout mode">
+                        <span class="fs-control-label">View</span>
+                        <button type="button" class="fs-seg-btn ${state.viewMode === 'rows' ? 'active' : ''}" data-view="rows">
+                            <i class="fa-solid fa-table-cells-large"></i> Aligned Rows
+                        </button>
+                        <button type="button" class="fs-seg-btn ${state.viewMode === 'columns' ? 'active' : ''}" data-view="columns">
+                            <i class="fa-solid fa-table-columns"></i> Columns
+                        </button>
+                        <button type="button" class="fs-seg-btn ${state.viewMode === 'diff' ? 'active' : ''}" data-view="diff">
+                            <i class="fa-solid fa-code-compare"></i> Visual Diff
+                        </button>
+                    </div>
+
+                    <button type="button" id="fs_toggle_dim_btn" class="fs-toggle-pill ${state.dimDuplicates ? 'active' : ''}" title="Dim blocks that are identical to an earlier swipe">
+                        <i class="fa-solid fa-clone"></i> Dim Duplicates
+                    </button>
+
+                    <button type="button" id="fs_toggle_collapse_btn" class="fs-toggle-pill ${state.collapseDuplicates ? 'active' : ''}" title="Collapse duplicate blocks">
+                        <i class="fa-solid fa-compress"></i> Collapse Dups
+                    </button>
+                </div>
+
+                <button type="button" id="fs_close_modal_btn" class="fs-close-btn" title="Close Franken-Swipe (Esc)">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+
+            <div class="fs-filter-bar">
+                <div class="fs-swipe-pills">
+                    <span class="fs-control-label"><i class="fa-solid fa-filter"></i> Swipes:</span>
+                    ${swipePillsHtml}
+                </div>
+                <div class="fs-filter-actions">
+                    <button type="button" id="fs_grab_selection_btn" class="fs-mini-btn accent" title="Highlight any arbitrary word or phrase in a swipe and click here to add it to your draft">
+                        <i class="fa-solid fa-highlighter"></i> Add Highlighted Text
+                    </button>
+                    <button type="button" id="fs_show_all_swipes_btn" class="fs-mini-btn" ${state.hiddenSwipes.size === 0 ? 'disabled' : ''}>
+                        <i class="fa-solid fa-eye"></i> Show All (${state.swipes.length - state.hiddenSwipes.size}/${state.swipes.length})
+                    </button>
+                </div>
+            </div>
+
+            <div class="fs-body">
+                <div class="fs-comparison-pane">
+                    <div class="fs-comparison-scroll" id="fs_comparison_scroll">
+                        ${comparisonHtml}
+                    </div>
+                </div>
+                <div class="fs-draft-pane">
+                    ${renderDraftBuilderPane(state)}
+                </div>
+            </div>
+
+            <div class="fs-footer">
+                <div class="fs-stats-bar">
+                    <span class="fs-stat-item">Words: <b>${draftStats.words}</b> <small>(${deltaFormatted} vs active)</small></span>
+                    <span>&bull;</span>
+                    <span class="fs-stat-item">Chars: <b>${draftStats.chars}</b></span>
+                    <span>&bull;</span>
+                    <span class="fs-stat-item">Est. Tokens: <b>~${draftStats.estTokens}</b></span>
+                    <span>&bull;</span>
+                    <span class="fs-stat-item">Blocks: <b>${state.draftBlocks.length}</b></span>
+                </div>
+
+                <div class="fs-save-actions">
+                    <button type="button" id="fs_save_new_swipe_btn" class="fs-save-btn ${defaultSave === 'new_swipe' ? 'primary' : ''}" ${isDraftEmpty ? 'disabled' : ''} title="Add the stitched response as a brand-new swipe and switch to it">
+                        <i class="fa-solid fa-plus-circle"></i> Save as New Swipe
+                    </button>
+                    <button type="button" id="fs_save_overwrite_btn" class="fs-save-btn ${defaultSave === 'overwrite' ? 'primary' : ''}" ${isDraftEmpty ? 'disabled' : ''} title="Overwrite Swipe #${state.activeSwipeIndex + 1} in place with the stitched response">
+                        <i class="fa-solid fa-pen-clip"></i> Overwrite Swipe #${state.activeSwipeIndex + 1}
+                    </button>
+                    <button type="button" id="fs_save_cleanup_btn" class="fs-save-btn ${defaultSave === 'save_cleanup' ? 'primary' : ''}" ${isDraftEmpty ? 'disabled' : ''} title="Save stitched response and remove unused donor swipes from this message">
+                        <i class="fa-solid fa-broom"></i> Save &amp; Clean Up
+                    </button>
+                </div>
+            </div>
+        `;
+
+        bindWorkspaceEvents(container, state);
+    } catch (err) {
+        console.error('[Franken-Swipe] Failed to render workspace:', err);
+        container.innerHTML = `
+            <div style="padding:24px; color:#ff8590;">
+                <h3>Franken-Swipe Render Error</h3>
+                <pre>${escapeHtml(err?.stack || err?.message || String(err))}</pre>
+                <button type="button" class="fs-mini-btn" onclick="document.getElementById('fs_modal_backdrop')?.remove()">Close</button>
+            </div>
+        `;
+    }
+}
+
+/* ==========================================================================
+   Workspace Event Binding & Interactive Handlers
+   ========================================================================== */
+
+function bindWorkspaceEvents(container, state) {
+    container.querySelector('#fs_close_modal_btn')?.addEventListener('click', closeWorkspaceModal);
+
+    container.querySelectorAll('[data-granularity]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const newGranularity = btn.getAttribute('data-granularity');
+            if (newGranularity && newGranularity !== state.granularity) {
+                state.granularity = newGranularity;
+                rebuildParsedSwipes(state);
+                renderWorkspace();
+            }
+        });
+    });
+
+    container.querySelectorAll('[data-view]').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const newView = btn.getAttribute('data-view');
+            if (newView && newView !== state.viewMode) {
+                state.viewMode = newView;
+                renderWorkspace();
+            }
+        });
+    });
+
+    container.querySelector('#fs_toggle_dim_btn')?.addEventListener('click', () => {
+        state.dimDuplicates = !state.dimDuplicates;
+        renderWorkspace();
+    });
+
+    container.querySelector('#fs_toggle_collapse_btn')?.addEventListener('click', () => {
+        state.collapseDuplicates = !state.collapseDuplicates;
+        renderWorkspace();
+    });
+
+    container.querySelectorAll('.fs-swipe-pill').forEach(pill => {
+        pill.addEventListener('click', () => {
+            const idx = Number(pill.getAttribute('data-swipe-index'));
+            if (state.hiddenSwipes.has(idx)) {
+                state.hiddenSwipes.delete(idx);
+            } else {
+                state.hiddenSwipes.add(idx);
+            }
+            renderWorkspace();
+        });
+    });
+
+    container.querySelector('#fs_show_all_swipes_btn')?.addEventListener('click', () => {
+        state.hiddenSwipes.clear();
+        renderWorkspace();
+    });
+
+    container.querySelectorAll('.fs-hide-swipe-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const idx = Number(btn.getAttribute('data-swipe-index'));
+            state.hiddenSwipes.add(idx);
+            renderWorkspace();
+        });
+    });
+
+    container.querySelectorAll('.fs-use-base-btn').forEach(btn => {
+        btn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const idx = Number(btn.getAttribute('data-swipe-index'));
+            loadSwipeAsBase(state, idx);
+        });
+    });
+
+    container.querySelectorAll('.fs-block-card[data-swipe-index][data-block-index]').forEach(card => {
+        card.addEventListener('click', () => {
+            const selection = window.getSelection();
+            if (selection && !selection.isCollapsed && selection.toString().trim().length > 0) {
+                return;
+            }
+            const sIdx = Number(card.getAttribute('data-swipe-index'));
+            const bIdx = Number(card.getAttribute('data-block-index'));
+            const blk = state.parsedSwipes[sIdx]?.blocks?.[bIdx];
+            if (!blk) return;
+
+            if (card.classList.contains('collapsed')) {
+                card.classList.remove('collapsed');
+                return;
+            }
+
+            addBlockToDraft(state, blk);
+        });
+    });
+
+    container.querySelector('#fs_diff_left_select')?.addEventListener('change', (e) => {
+        state.diffLeftSource = e.target.value;
+        renderWorkspace();
+    });
+
+    container.querySelector('#fs_diff_right_select')?.addEventListener('change', (e) => {
+        state.diffRightSource = e.target.value;
+        renderWorkspace();
+    });
+
+    container.querySelector('#fs_diff_swap_btn')?.addEventListener('click', () => {
+        const tmp = state.diffLeftSource;
+        state.diffLeftSource = state.diffRightSource;
+        state.diffRightSource = tmp;
+        renderWorkspace();
+    });
+
+    container.querySelectorAll('.fs-block-card[data-diff-side]').forEach(card => {
+        card.addEventListener('click', () => {
+            const selection = window.getSelection();
+            if (selection && !selection.isCollapsed && selection.toString().trim().length > 0) {
+                return;
+            }
+            const side = card.getAttribute('data-diff-side');
+            const idx = Number(card.getAttribute('data-diff-index'));
+            const sourceKey = side === 'left' ? state.diffLeftSource : state.diffRightSource;
+            const blocks = getDiffSourceBlocks(state, sourceKey);
+            const blk = blocks[idx];
+            if (blk) {
+                addBlockToDraft(state, blk);
+            }
+        });
+    });
+
+    container.querySelector('#fs_grab_selection_btn')?.addEventListener('click', () => {
+        addCurrentHighlightedSelectionToDraft();
+    });
+
+    container.querySelector('#fs_undo_btn')?.addEventListener('click', () => performUndo(state));
+    container.querySelector('#fs_redo_btn')?.addEventListener('click', () => performRedo(state));
+
+    container.querySelector('#fs_toggle_raw_btn')?.addEventListener('click', () => {
+        pushUndoSnapshot(state);
+        if (!state.rawEditorMode) {
+            state.rawText = assembleDraftText(state);
+            state.rawEditorMode = true;
+        } else {
+            const paragraphs = splitSwipeText(state.rawText, 'paragraphs');
+            state.draftBlocks = paragraphs.map((p) => ({
+                id: nextBlockId(),
+                swipeIndex: -1,
+                sourceBlockIndex: null,
+                customLabel: 'Edited Draft',
+                text: p.text,
+                kind: 'paragraph',
+                joinAfter: '\n\n',
+                edited: true,
+                norm: p.norm,
+            }));
+            state.rawEditorMode = false;
+        }
+        renderWorkspace();
+    });
+
+    container.querySelector('#fs_load_base_select')?.addEventListener('change', (e) => {
+        const val = e.target.value;
+        if (val !== '') {
+            loadSwipeAsBase(state, Number(val));
+        }
+    });
+
+    container.querySelector('#fs_empty_load_active_btn')?.addEventListener('click', () => {
+        loadSwipeAsBase(state, state.activeSwipeIndex);
+    });
+
+    container.querySelector('#fs_add_custom_block_btn')?.addEventListener('click', () => {
+        addBlockToDraft(state, {
+            swipeIndex: -1,
+            blockIndex: null,
+            text: '',
+            kind: 'paragraph',
+            joinAfter: '\n\n',
+        }, 'Custom');
+    });
+
+    container.querySelector('#fs_clear_draft_btn')?.addEventListener('click', () => {
+        pushUndoSnapshot(state);
+        state.draftBlocks = [];
+        state.rawText = '';
+        state.replaceTargetId = null;
+        renderWorkspace();
+    });
+
+    container.querySelector('#fs_cancel_replace_btn')?.addEventListener('click', () => {
+        state.replaceTargetId = null;
+        renderWorkspace();
+    });
+
+    const rawEditor = container.querySelector('#fs_raw_editor');
+    if (rawEditor) {
+        rawEditor.addEventListener('input', () => {
+            state.rawText = rawEditor.value;
+            updateFooterStatsOnly(container, state);
+        });
     }
 
-    jQuery(() => { try { init(); } catch (e) { console.error(`[${NAME}] init failed`, e); } });
-})();
+    container.querySelectorAll('.fs-target-replace-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const id = btn.getAttribute('data-draft-id');
+            state.replaceTargetId = state.replaceTargetId === id ? null : id;
+            renderWorkspace();
+        });
+    });
+
+    container.querySelectorAll('.fs-move-up-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const idx = Number(btn.getAttribute('data-index'));
+            if (idx > 0) {
+                pushUndoSnapshot(state);
+                const tmp = state.draftBlocks[idx - 1];
+                state.draftBlocks[idx - 1] = state.draftBlocks[idx];
+                state.draftBlocks[idx] = tmp;
+                state.rawText = assembleDraftText(state);
+                renderWorkspace();
+            }
+        });
+    });
+
+    container.querySelectorAll('.fs-move-down-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const idx = Number(btn.getAttribute('data-index'));
+            if (idx < state.draftBlocks.length - 1) {
+                pushUndoSnapshot(state);
+                const tmp = state.draftBlocks[idx + 1];
+                state.draftBlocks[idx + 1] = state.draftBlocks[idx];
+                state.draftBlocks[idx] = tmp;
+                state.rawText = assembleDraftText(state);
+                renderWorkspace();
+            }
+        });
+    });
+
+    container.querySelectorAll('.fs-split-block-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const idx = Number(btn.getAttribute('data-index'));
+            const blk = state.draftBlocks[idx];
+            if (!blk) return;
+
+            let subParts = splitParagraphIntoSentences(blk.text);
+            let joiner = ' ';
+            if (subParts.length <= 1 && blk.text.includes('\n')) {
+                subParts = blk.text.split(/\n+/).map(s => s.trim()).filter(Boolean);
+                joiner = '\n';
+            }
+            if (subParts.length <= 1) {
+                notify('info', 'This block cannot be split further automatically.');
+                return;
+            }
+
+            pushUndoSnapshot(state);
+            const newBlocks = subParts.map((part, pIdx) => ({
+                id: nextBlockId(),
+                swipeIndex: blk.swipeIndex,
+                sourceBlockIndex: null,
+                customLabel: blk.customLabel,
+                text: part,
+                kind: 'sentence',
+                joinAfter: pIdx === subParts.length - 1 ? blk.joinAfter : joiner,
+                edited: true,
+                norm: normalizeForComparison(part),
+            }));
+            state.draftBlocks.splice(idx, 1, ...newBlocks);
+            state.rawText = assembleDraftText(state);
+            renderWorkspace();
+        });
+    });
+
+    container.querySelectorAll('.fs-delete-block-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const idx = Number(btn.getAttribute('data-index'));
+            pushUndoSnapshot(state);
+            const removed = state.draftBlocks.splice(idx, 1)[0];
+            if (removed && state.replaceTargetId === removed.id) {
+                state.replaceTargetId = null;
+            }
+            state.rawText = assembleDraftText(state);
+            if (!state.reasoningManuallyEdited) {
+                state.customReasoningText = computeResolvedReasoning(state);
+            }
+            renderWorkspace();
+        });
+    });
+
+    container.querySelectorAll('.fs-cycle-joiner-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const idx = Number(btn.getAttribute('data-index'));
+            const blk = state.draftBlocks[idx];
+            if (!blk) return;
+            const order = ['\n\n', '\n', ' '];
+            const nextIdx = (order.indexOf(blk.joinAfter) + 1) % order.length;
+            blk.joinAfter = order[nextIdx];
+            state.rawText = assembleDraftText(state);
+            renderWorkspace();
+        });
+    });
+
+    container.querySelectorAll('.fs-merge-down-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const idx = Number(btn.getAttribute('data-index'));
+            if (idx < 0 || idx >= state.draftBlocks.length - 1) return;
+            pushUndoSnapshot(state);
+
+            const current = state.draftBlocks[idx];
+            const next = state.draftBlocks[idx + 1];
+            const glue = current.joinAfter === '\n\n' ? ' ' : (current.joinAfter || ' ');
+            const mergedLabel = current.swipeIndex === next.swipeIndex && current.swipeIndex >= 0
+                ? `Swipe #${current.swipeIndex + 1}`
+                : 'Merged';
+
+            current.text = `${current.text.trim()}${glue}${next.text.trim()}`;
+            current.joinAfter = next.joinAfter;
+            current.customLabel = mergedLabel;
+            current.edited = true;
+            current.norm = normalizeForComparison(current.text);
+
+            state.draftBlocks.splice(idx + 1, 1);
+            state.rawText = assembleDraftText(state);
+            renderWorkspace();
+        });
+    });
+
+    container.querySelectorAll('.fs-draft-editor-input').forEach(textarea => {
+        textarea.addEventListener('input', () => {
+            const idx = Number(textarea.getAttribute('data-index'));
+            const blk = state.draftBlocks[idx];
+            if (!blk) return;
+            blk.text = textarea.value;
+            blk.edited = true;
+            blk.norm = normalizeForComparison(blk.text);
+            state.rawText = assembleDraftText(state);
+            updateFooterStatsOnly(container, state);
+        });
+    });
+
+    container.querySelectorAll('.fs-draft-block').forEach(blockEl => {
+        blockEl.addEventListener('dragstart', (e) => {
+            if (document.activeElement && document.activeElement.tagName === 'TEXTAREA') {
+                e.preventDefault();
+                return;
+            }
+            state.dragSourceIndex = Number(blockEl.getAttribute('data-draft-index'));
+            blockEl.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+        });
+
+        blockEl.addEventListener('dragend', () => {
+            blockEl.classList.remove('dragging');
+            state.dragSourceIndex = null;
+        });
+
+        blockEl.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+        });
+
+        blockEl.addEventListener('drop', (e) => {
+            e.preventDefault();
+            const targetIndex = Number(blockEl.getAttribute('data-draft-index'));
+            const fromIndex = state.dragSourceIndex;
+            if (fromIndex === null || fromIndex === targetIndex || isNaN(fromIndex) || isNaN(targetIndex)) {
+                return;
+            }
+            pushUndoSnapshot(state);
+            const [moved] = state.draftBlocks.splice(fromIndex, 1);
+            state.draftBlocks.splice(targetIndex, 0, moved);
+            state.dragSourceIndex = null;
+            state.rawText = assembleDraftText(state);
+            renderWorkspace();
+        });
+    });
+
+    container.querySelector('#fs_reasoning_mode_select')?.addEventListener('change', (e) => {
+        state.reasoningMode = e.target.value;
+        state.reasoningManuallyEdited = false;
+        state.customReasoningText = computeResolvedReasoning(state);
+        renderWorkspace();
+    });
+
+    container.querySelector('#fs_toggle_reasoning_preview_btn')?.addEventListener('click', () => {
+        state.reasoningExpanded = !state.reasoningExpanded;
+        renderWorkspace();
+    });
+
+    container.querySelector('#fs_reasoning_textarea')?.addEventListener('input', (e) => {
+        state.reasoningManuallyEdited = true;
+        state.customReasoningText = e.target.value;
+    });
+
+    container.querySelector('#fs_save_new_swipe_btn')?.addEventListener('click', () => {
+        saveStitchedResult(state, 'new_swipe');
+    });
+
+    container.querySelector('#fs_save_overwrite_btn')?.addEventListener('click', () => {
+        saveStitchedResult(state, 'overwrite');
+    });
+
+    container.querySelector('#fs_save_cleanup_btn')?.addEventListener('click', () => {
+        saveStitchedResult(state, 'save_cleanup');
+    });
+}
+
+function updateFooterStatsOnly(container, state) {
+    const statsBar = container.querySelector('.fs-stats-bar');
+    if (!statsBar) return;
+    const assembled = assembleDraftText(state);
+    const draftStats = countStats(assembled);
+    const activeStats = countStats(state.swipes[state.activeSwipeIndex]?.bodyText || '');
+    const wordDelta = draftStats.words - activeStats.words;
+    const deltaFormatted = wordDelta >= 0 ? `+${wordDelta}` : `${wordDelta}`;
+
+    statsBar.innerHTML = `
+        <span class="fs-stat-item">Words: <b>${draftStats.words}</b> <small>(${deltaFormatted} vs active)</small></span>
+        <span>&bull;</span>
+        <span class="fs-stat-item">Chars: <b>${draftStats.chars}</b></span>
+        <span>&bull;</span>
+        <span class="fs-stat-item">Est. Tokens: <b>~${draftStats.estTokens}</b></span>
+        <span>&bull;</span>
+        <span class="fs-stat-item">Blocks: <b>${state.draftBlocks.length}</b></span>
+    `;
+
+    const isEmpty = draftStats.chars === 0;
+    container.querySelectorAll('.fs-save-btn').forEach(btn => {
+        btn.disabled = isEmpty;
+    });
+}
+
+/* ==========================================================================
+   Freehand Text Selection Popover & Snippet Grabber
+   ========================================================================== */
+
+let pendingSelectionData = null;
+
+function removeSelectionPopover() {
+    const existing = document.getElementById('fs_selection_popover');
+    if (existing) existing.remove();
+    pendingSelectionData = null;
+}
+
+function handleFreehandSelectionChange() {
+    if (!workspaceState) return;
+    const selection = window.getSelection();
+    if (!selection || selection.isCollapsed) {
+        removeSelectionPopover();
+        return;
+    }
+
+    const selectedText = selection.toString().trim();
+    if (!selectedText) {
+        removeSelectionPopover();
+        return;
+    }
+
+    const anchorEl = selection.anchorNode?.nodeType === Node.ELEMENT_NODE
+        ? selection.anchorNode
+        : selection.anchorNode?.parentElement;
+
+    const comparisonScroll = document.getElementById('fs_comparison_scroll');
+    if (!anchorEl || !comparisonScroll || !comparisonScroll.contains(anchorEl)) {
+        removeSelectionPopover();
+        return;
+    }
+
+    const blockCard = anchorEl.closest('.fs-block-card');
+    const swipeIndexAttr = blockCard?.getAttribute('data-swipe-index');
+    const swipeIndex = swipeIndexAttr !== null && swipeIndexAttr !== undefined ? Number(swipeIndexAttr) : -1;
+
+    pendingSelectionData = {
+        text: selectedText,
+        swipeIndex: isNaN(swipeIndex) ? -1 : swipeIndex,
+    };
+
+    const range = selection.getRangeAt(0);
+    const rect = range.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) return;
+
+    let popover = document.getElementById('fs_selection_popover');
+    if (!popover) {
+        popover = document.createElement('div');
+        popover.id = 'fs_selection_popover';
+        popover.className = 'fs-selection-popover';
+        popover.innerHTML = `
+            <button type="button" id="fs_popover_add_btn" class="fs-mini-btn accent">
+                <i class="fa-solid fa-plus"></i> Add Selection to Draft
+            </button>
+        `;
+        document.body.appendChild(popover);
+
+        popover.querySelector('#fs_popover_add_btn')?.addEventListener('mousedown', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            addCurrentHighlightedSelectionToDraft();
+        });
+    }
+
+    const top = Math.max(12, rect.top - 42);
+    const left = Math.min(window.innerWidth - 220, Math.max(12, rect.left + rect.width / 2 - 85));
+    popover.style.top = `${top}px`;
+    popover.style.left = `${left}px`;
+}
+
+function addCurrentHighlightedSelectionToDraft() {
+    if (!workspaceState) return;
+
+    let text = pendingSelectionData?.text || '';
+    let swipeIndex = pendingSelectionData?.swipeIndex ?? -1;
+
+    if (!text) {
+        const sel = window.getSelection();
+        text = sel ? sel.toString().trim() : '';
+    }
+
+    if (!text) {
+        notify('info', 'Highlight any word, sentence, or phrase inside a donor swipe first.');
+        return;
+    }
+
+    const label = swipeIndex >= 0 ? `Selection (#${swipeIndex + 1})` : 'Selection';
+    addBlockToDraft(workspaceState, {
+        swipeIndex,
+        blockIndex: null,
+        text,
+        kind: 'selection',
+        joinAfter: ' ',
+    }, label);
+
+    window.getSelection()?.removeAllRanges();
+    removeSelectionPopover();
+}
+
+/* ==========================================================================
+   Saving Stitched Result Back to SillyTavern Chat
+   ========================================================================== */
+
+async function saveStitchedResult(state, saveMode) {
+    const context = getContext();
+    const msg = context.chat?.[state.messageId];
+    if (!msg) {
+        notify('error', 'Target message no longer exists in chat.');
+        return;
+    }
+
+    const stitchedBody = assembleDraftText(state).trim();
+    if (!stitchedBody) {
+        notify('warning', 'Cannot save an empty draft.');
+        return;
+    }
+
+    const resolvedReasoning = (state.reasoningManuallyEdited
+        ? state.customReasoningText
+        : computeResolvedReasoning(state)).trim();
+
+    const primaryDonorIdx = getPrimaryDonorIndex(state);
+    const donorData = state.swipes[primaryDonorIdx] || state.swipes[state.activeSwipeIndex] || {};
+
+    let finalSwipeText = stitchedBody;
+    if (resolvedReasoning && donorData.inlineTag && !donorData.hasMetadataReasoning) {
+        finalSwipeText = `<${donorData.inlineTag}>\n${resolvedReasoning}\n</${donorData.inlineTag}>\n\n${stitchedBody}`;
+    }
+
+    if (!Array.isArray(msg.swipes)) {
+        msg.swipes = [msg.mes || ''];
+    }
+    if (!Array.isArray(msg.swipe_info)) {
+        msg.swipe_info = [];
+    }
+    while (msg.swipe_info.length < msg.swipes.length) {
+        msg.swipe_info.push({
+            send_date: msg.send_date,
+            gen_started: msg.gen_started,
+            gen_finished: msg.gen_finished,
+            extra: safeClone(msg.extra || {}),
+        });
+    }
+
+    const nowIso = new Date().toISOString();
+    const baseExtra = safeClone(donorData.extra || msg.extra || {});
+    delete baseExtra.display_text;
+
+    if (resolvedReasoning) {
+        baseExtra.reasoning = resolvedReasoning;
+        if (!baseExtra.reasoning_type) {
+            baseExtra.reasoning_type = 'edited';
+        }
+    } else {
+        delete baseExtra.reasoning;
+        delete baseExtra.reasoning_duration;
+        delete baseExtra.reasoning_signature;
+    }
+
+    const newSwipeInfoEntry = {
+        send_date: msg.send_date || nowIso,
+        gen_started: msg.gen_started || nowIso,
+        gen_finished: nowIso,
+        extra: baseExtra,
+    };
+
+    let targetSwipeId = 0;
+
+    if (saveMode === 'new_swipe') {
+        msg.swipes.push(finalSwipeText);
+        msg.swipe_info.push(newSwipeInfoEntry);
+        targetSwipeId = msg.swipes.length - 1;
+    } else if (saveMode === 'overwrite') {
+        targetSwipeId = Math.min(Math.max(0, state.activeSwipeIndex), msg.swipes.length - 1);
+        msg.swipes[targetSwipeId] = finalSwipeText;
+        msg.swipe_info[targetSwipeId] = newSwipeInfoEntry;
+    } else if (saveMode === 'save_cleanup') {
+        msg.swipes = [finalSwipeText];
+        msg.swipe_info = [newSwipeInfoEntry];
+        targetSwipeId = 0;
+    }
+
+    msg.swipe_id = targetSwipeId;
+    msg.mes = finalSwipeText;
+    msg.extra = Object.assign({}, msg.extra || {}, safeClone(baseExtra));
+    delete msg.extra.display_text;
+
+    if (!resolvedReasoning && msg.extra) {
+        delete msg.extra.reasoning;
+    }
+
+    if (typeof context.updateMessageBlock === 'function') {
+        context.updateMessageBlock(state.messageId, msg, { rerenderMessage: true });
+    }
+
+    const mesEl = document.querySelector(`#chat .mes[mesid="${state.messageId}"]`);
+    if (mesEl) {
+        mesEl.setAttribute('swipeid', String(msg.swipe_id));
+        const counterEl = mesEl.querySelector('.swipes-counter');
+        if (counterEl) {
+            counterEl.textContent = `${msg.swipe_id + 1}\u200b/\u200b${msg.swipes.length}`;
+        }
+    }
+
+    if (context.eventSource && context.event_types) {
+        if (context.event_types.MESSAGE_SWIPED) {
+            await context.eventSource.emit(context.event_types.MESSAGE_SWIPED, state.messageId);
+        }
+        if (context.event_types.MESSAGE_UPDATED) {
+            await context.eventSource.emit(context.event_types.MESSAGE_UPDATED, state.messageId);
+        }
+    }
+
+    if (typeof context.saveChatConditional === 'function') {
+        await context.saveChatConditional();
+    } else if (typeof context.saveChat === 'function') {
+        await context.saveChat();
+    }
+
+    decorateAllChatMessages(true);
+    closeWorkspaceModal();
+
+    if (saveMode === 'new_swipe') {
+        notify('success', `Saved stitched response as Swipe #${targetSwipeId + 1}!`);
+    } else if (saveMode === 'overwrite') {
+        notify('success', `Overwrote Swipe #${targetSwipeId + 1} with stitched response!`);
+    } else {
+        notify('success', 'Saved stitched response and cleaned up unused donor swipes!');
+    }
+}
+
+/* ==========================================================================
+   Chat UI Trigger Buttons (Swipe Controls Footer Bar & Message Action Menu)
+   ========================================================================== */
+
+function decorateMessageElement(mesEl, forceRebuild = false) {
+    if (!(mesEl instanceof HTMLElement)) return;
+    const mesIdAttr = mesEl.getAttribute('mesid');
+    if (mesIdAttr === null) return;
+    const mesId = Number(mesIdAttr);
+
+    const { chat } = getContext();
+    const msg = chat?.[mesId];
+    const placement = getSettings().buttonPlacement || 'both';
+    const swipeCount = Array.isArray(msg?.swipes) ? msg.swipes.length : 0;
+
+    if (!msg || swipeCount < 2 || placement === 'none') {
+        mesEl.querySelectorAll('.fs-mes-action-btn, .fs-swipe-bar, .fs-swipe-trigger-btn').forEach(el => el.remove());
+        return;
+    }
+
+    const currentSignature = `${placement}:${swipeCount}`;
+    if (!forceRebuild && mesEl.getAttribute('data-fs-sig') === currentSignature) {
+        const hasAction = Boolean(mesEl.querySelector('.fs-mes-action-btn'));
+        const hasSwipeBar = Boolean(mesEl.querySelector('.fs-swipe-bar'));
+        const needsAction = placement === 'both' || placement === 'action_menu';
+        const needsSwipeBar = placement === 'both' || placement === 'swipe_controls';
+        if (hasAction === needsAction && hasSwipeBar === needsSwipeBar) {
+            return;
+        }
+    }
+
+    mesEl.querySelectorAll('.fs-mes-action-btn, .fs-swipe-bar, .fs-swipe-trigger-btn').forEach(el => el.remove());
+    mesEl.setAttribute('data-fs-sig', currentSignature);
+
+    const triggerOpen = (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const dynamicMesId = Number(mesEl.getAttribute('mesid'));
+        openFrankenSwipeWorkspace(isNaN(dynamicMesId) ? mesId : dynamicMesId);
+    };
+
+    // 1. Button inside Message Action Menu (.extraMesButtons / .mes_buttons)
+    if (placement === 'both' || placement === 'action_menu') {
+        const extraButtons = mesEl.querySelector('.extraMesButtons') || mesEl.querySelector('.mes_buttons');
+        if (extraButtons) {
+            const actionBtn = document.createElement('div');
+            actionBtn.className = 'mes_button fa-solid fa-dna interactable fs-mes-action-btn';
+            actionBtn.title = `Franken-Swipe: Compare & stitch ${swipeCount} swipes`;
+            actionBtn.setAttribute('tabindex', '0');
+            actionBtn.addEventListener('click', triggerOpen);
+            extraButtons.prepend(actionBtn);
+        }
+    }
+
+    // 2. Pill button inside its own clean right-aligned bar at the bottom of .mes_block
+    //    (Never placed inside .swipe_right or .swipes-counter, so it never overlaps arrows or numbers)
+    if (placement === 'both' || placement === 'swipe_controls') {
+        const mesBlock = mesEl.querySelector('.mes_block');
+        if (mesBlock) {
+            const swipeBar = document.createElement('div');
+            swipeBar.className = 'fs-swipe-bar';
+
+            const pillBtn = document.createElement('button');
+            pillBtn.type = 'button';
+            pillBtn.className = 'fs-swipe-trigger-btn interactable';
+            pillBtn.title = `Open Franken-Swipe (${swipeCount} swipes available)`;
+            pillBtn.innerHTML = `<i class="fa-solid fa-dna"></i><span>Stitch (${swipeCount})</span>`;
+            pillBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+            pillBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
+            pillBtn.addEventListener('click', triggerOpen);
+
+            swipeBar.appendChild(pillBtn);
+            mesBlock.appendChild(swipeBar);
+        }
+    }
+}
+
+export function decorateAllChatMessages(forceRebuild = false) {
+    const messages = document.querySelectorAll('#chat .mes');
+    messages.forEach(mesEl => decorateMessageElement(mesEl, forceRebuild));
+}
+
+function scheduleDecorateChatMessages(forceRebuild = false) {
+    if (decorateDebounceTimer) {
+        clearTimeout(decorateDebounceTimer);
+    }
+    decorateDebounceTimer = setTimeout(() => {
+        decorateDebounceTimer = null;
+        decorateAllChatMessages(forceRebuild);
+    }, 80);
+}
+
+/* ==========================================================================
+   Keyboard Shortcuts & Slash Command Registration
+   ========================================================================== */
+
+function formatKeyEventCombo(e) {
+    const parts = [];
+    if (e.ctrlKey) parts.push('Ctrl');
+    if (e.altKey) parts.push('Alt');
+    if (e.shiftKey) parts.push('Shift');
+    if (e.metaKey) parts.push('Meta');
+
+    const ignoredCodes = new Set([
+        'ControlLeft', 'ControlRight',
+        'ShiftLeft', 'ShiftRight',
+        'AltLeft', 'AltRight',
+        'MetaLeft', 'MetaRight',
+    ]);
+
+    if (!ignoredCodes.has(e.code)) {
+        parts.push(e.code || e.key.toUpperCase());
+    }
+    return parts.join('+');
+}
+
+function handleGlobalKeydown(e) {
+    // 1. Hotkey Recorder in Settings
+    if (isRecordingHotkey) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.key === 'Escape') {
+            isRecordingHotkey = false;
+            updateHotkeyRecorderUI();
+            return;
+        }
+        const combo = formatKeyEventCombo(e);
+        if (!['Ctrl', 'Alt', 'Shift', 'Meta'].includes(combo.split('+').pop())) {
+            const settings = getSettings();
+            settings.hotkeyCombo = combo;
+            saveSettings();
+            isRecordingHotkey = false;
+            updateHotkeyRecorderUI();
+            notify('success', `Franken-Swipe shortcut set to ${combo}`);
+        }
+        return;
+    }
+
+    // 2. Inside Workspace Modal shortcuts (Escape, Ctrl+Z, Ctrl+Y)
+    if (workspaceState) {
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            closeWorkspaceModal();
+            return;
+        }
+        const activeTag = document.activeElement?.tagName;
+        const inTextInput = activeTag === 'TEXTAREA' || activeTag === 'INPUT';
+        if (!inTextInput && (e.ctrlKey || e.metaKey) && e.code === 'KeyZ' && !e.shiftKey) {
+            e.preventDefault();
+            performUndo(workspaceState);
+            return;
+        }
+        if (!inTextInput && (e.ctrlKey || e.metaKey) && (e.code === 'KeyY' || (e.code === 'KeyZ' && e.shiftKey))) {
+            e.preventDefault();
+            performRedo(workspaceState);
+            return;
+        }
+        return;
+    }
+
+    // 3. Global Hotkey Trigger to open Franken-Swipe on latest message
+    const settings = getSettings();
+    if (!settings.hotkeyEnabled || !settings.hotkeyCombo) return;
+
+    const activeTag = document.activeElement?.tagName;
+    if (activeTag === 'INPUT' || activeTag === 'TEXTAREA' || document.activeElement?.isContentEditable) {
+        if (!e.altKey && !e.ctrlKey && !e.metaKey) return;
+    }
+
+    const pressedCombo = formatKeyEventCombo(e);
+    if (pressedCombo.toLowerCase() === settings.hotkeyCombo.toLowerCase()) {
+        e.preventDefault();
+        e.stopPropagation();
+        openOnLatestMultiSwipeMessage();
+    }
+}
+
+function registerFrankenSwipeSlashCommands() {
+    const context = getContext();
+    const { SlashCommandParser, SlashCommand, ARGUMENT_TYPE, SlashCommandArgument } = context;
+
+    const executeCallback = (_namedArgs, unnamedArgs) => {
+        const argStr = String(unnamedArgs ?? '').trim();
+        if (argStr !== '' && !isNaN(Number(argStr))) {
+            openFrankenSwipeWorkspace(Number(argStr));
+        } else {
+            openOnLatestMultiSwipeMessage();
+        }
+        return '';
+    };
+
+    if (SlashCommandParser && SlashCommand && typeof SlashCommandParser.addCommandObject === 'function') {
+        try {
+            const unnamedArgList = (SlashCommandArgument && ARGUMENT_TYPE) ? [
+                SlashCommandArgument.fromProps({
+                    description: 'Optional message ID (defaults to latest message with 2+ swipes)',
+                    typeList: [ARGUMENT_TYPE.NUMBER],
+                    isRequired: false,
+                }),
+            ] : [];
+
+            SlashCommandParser.addCommandObject(SlashCommand.fromProps({
+                name: 'frankenswipe',
+                aliases: ['fswipe', 'stitch'],
+                callback: executeCallback,
+                unnamedArgumentList: unnamedArgList,
+                helpString: 'Opens the Franken-Swipe workspace to compare and stitch swipes together. Usage: /frankenswipe [messageId]',
+            }));
+            return;
+        } catch (err) {
+            console.warn('[Franken-Swipe] SlashCommandParser registration fallback:', err);
+        }
+    }
+
+    if (typeof context.registerSlashCommand === 'function') {
+        context.registerSlashCommand('frankenswipe', executeCallback, ['fswipe', 'stitch'], 'Opens the Franken-Swipe stitching workspace.');
+    }
+}
+
+/* ==========================================================================
+   Extension Settings Panel Initialization
+   ========================================================================== */
+
+function updateHotkeyRecorderUI() {
+    const input = document.getElementById('fs_setting_hotkey');
+    const btn = document.getElementById('fs_record_hotkey_btn');
+    const settings = getSettings();
+    if (input) {
+        input.value = isRecordingHotkey ? 'Press key combo (Esc to cancel)...' : (settings.hotkeyCombo || 'Alt+KeyF');
+    }
+    if (btn) {
+        btn.innerHTML = isRecordingHotkey
+            ? '<i class="fa-solid fa-circle-stop"></i> Cancel'
+            : '<i class="fa-solid fa-keyboard"></i> Record';
+    }
+}
+
+async function initSettingsPanel() {
+    if (document.getElementById('franken_swipe_settings')) return;
+
+    let html = FALLBACK_SETTINGS_HTML;
+    try {
+        const response = await fetch(`${EXTENSION_FOLDER_URL}/settings.html`);
+        if (response.ok) {
+            html = await response.text();
+        }
+    } catch {
+        // Fallback inline template is used seamlessly
+    }
+
+    const targetContainer = document.getElementById('extensions_settings2') || document.getElementById('extensions_settings');
+    if (!targetContainer) return;
+
+    targetContainer.insertAdjacentHTML('beforeend', html);
+
+    const settings = getSettings();
+
+    const bindSelect = (id, key, onChangeExtra) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.value = settings[key];
+        el.addEventListener('change', () => {
+            settings[key] = el.value;
+            saveSettings();
+            if (onChangeExtra) onChangeExtra();
+        });
+    };
+
+    const bindCheckbox = (id, key) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.checked = Boolean(settings[key]);
+        el.addEventListener('change', () => {
+            settings[key] = el.checked;
+            saveSettings();
+        });
+    };
+
+    bindSelect('fs_setting_button_placement', 'buttonPlacement', () => decorateAllChatMessages(true));
+    bindSelect('fs_setting_default_granularity', 'defaultGranularity');
+    bindSelect('fs_setting_default_view', 'defaultView');
+    bindSelect('fs_setting_default_save_mode', 'defaultSaveMode');
+    bindSelect('fs_setting_default_reasoning', 'defaultReasoning');
+
+    bindCheckbox('fs_setting_dim_duplicates', 'dimDuplicates');
+    bindCheckbox('fs_setting_collapse_duplicates', 'collapseDuplicates');
+    bindCheckbox('fs_setting_auto_base_active', 'autoBaseActive');
+    bindCheckbox('fs_setting_hotkey_enabled', 'hotkeyEnabled');
+
+    updateHotkeyRecorderUI();
+
+    document.getElementById('fs_record_hotkey_btn')?.addEventListener('click', () => {
+        isRecordingHotkey = !isRecordingHotkey;
+        updateHotkeyRecorderUI();
+    });
+
+    document.getElementById('fs_open_latest_btn')?.addEventListener('click', () => {
+        openOnLatestMultiSwipeMessage();
+    });
+}
+
+/* ==========================================================================
+   Extension Lifecycle & Event Hooks
+   ========================================================================== */
+
+function setupChatObserver() {
+    const chatEl = document.getElementById('chat');
+    if (!chatEl) return;
+
+    const observer = new MutationObserver((mutations) => {
+        let shouldRefresh = false;
+        for (const mutation of mutations) {
+            // Ignore mutations caused by our own Franken-Swipe buttons
+            const target = mutation.target;
+            if (target instanceof HTMLElement && (
+                target.classList.contains('fs-swipe-bar') ||
+                target.classList.contains('fs-swipe-trigger-btn') ||
+                target.classList.contains('fs-mes-action-btn')
+            )) {
+                continue;
+            }
+            if (mutation.addedNodes.length > 0 || mutation.type === 'characterData') {
+                shouldRefresh = true;
+                break;
+            }
+        }
+        if (shouldRefresh) {
+            scheduleDecorateChatMessages(false);
+        }
+    });
+
+    observer.observe(chatEl, { childList: true, subtree: true });
+}
+
+jQuery(async () => {
+    const context = getContext();
+    await initSettingsPanel();
+    registerFrankenSwipeSlashCommands();
+    document.addEventListener('keydown', handleGlobalKeydown, true);
+
+    const refreshButtons = () => {
+        scheduleDecorateChatMessages(false);
+    };
+
+    if (context.eventSource && context.event_types) {
+        const et = context.event_types;
+        const events = [
+            et.APP_READY,
+            et.CHAT_CHANGED,
+            et.MESSAGE_RECEIVED,
+            et.MESSAGE_SWIPED,
+            et.MESSAGE_UPDATED,
+            et.MESSAGE_EDITED,
+            et.MESSAGE_DELETED,
+            et.CHARACTER_MESSAGE_RENDERED,
+            et.USER_MESSAGE_RENDERED,
+            et.GENERATION_ENDED,
+        ].filter(Boolean);
+
+        for (const evt of events) {
+            context.eventSource.on(evt, refreshButtons);
+        }
+    }
+
+    setupChatObserver();
+    scheduleDecorateChatMessages(true);
+    console.log('[Franken-Swipe] Extension loaded and ready.');
+});
