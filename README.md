@@ -6,6 +6,10 @@ When generating multiple swipes on a message, no single swipe is always perfectâ
 
 ---
 
+<img width="1729" height="907" alt="image" src="https://github.com/user-attachments/assets/a05e6d5f-9dd6-4db4-976c-ebf687347b05" />
+
+---
+
 ## âœ¨ Features
 
 ### 1. Easy Access & Triggers
